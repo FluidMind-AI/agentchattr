@@ -13,10 +13,16 @@ if sys.platform != "win32":
     raise ImportError("wrapper_windows only works on Windows")
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 STD_INPUT_HANDLE = -10
 KEY_EVENT = 0x0001
 VK_RETURN = 0x0D
+
+# Window message constants used by the wm_setfocus Enter backend.
+WM_SETFOCUS = 0x0007
+WM_ACTIVATE = 0x0006
+WA_ACTIVE = 1
 
 
 class _CHAR_UNION(ctypes.Union):
@@ -55,11 +61,30 @@ def _write_key(handle, char: str, key_down: bool, vk: int = 0, scan: int = 0):
     kernel32.WriteConsoleInputW(handle, ctypes.byref(rec), 1, ctypes.byref(written))
 
 
-def inject(text: str, *, delay: float = 0.3):
+def _send_wm_setfocus():
+    """Tell the console window it just received focus — some Node TUIs
+    (GitHub Copilot CLI) gate Enter processing on focus state, so this
+    makes them accept injected Enter without an actual focus change."""
+    hwnd = kernel32.GetConsoleWindow()
+    if not hwnd:
+        return
+    user32.SendMessageW(hwnd, WM_SETFOCUS, 0, 0)
+    user32.SendMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+
+
+def inject(text: str, *, delay: float = 0.3, enter_backend: str = "console_input"):
     """Inject text + Enter into the current console via WriteConsoleInput.
 
     Uses batch WriteConsoleInputW for the text (all records in one call)
     then a separate Enter keystroke after a scaled delay.
+
+    `enter_backend` controls how the final Enter is delivered:
+      - "console_input" (default): standard WriteConsoleInput + VK_RETURN.
+        Works for Claude/Codex/Gemini/Kimi/Qwen/Kilo/etc.
+      - "wm_setfocus": fake-focus message (WM_SETFOCUS + WM_ACTIVATE) to
+        the console window before sending VK_RETURN. Needed for GitHub
+        Copilot CLI, whose Ink-based input layer ignores Enter events
+        when the console window is unfocused.
     """
     handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
 
@@ -85,6 +110,11 @@ def inject(text: str, *, delay: float = 0.3):
     # Scale delay with text length so longer prompts get more processing time
     scaled_delay = max(delay, len(text) * 0.001)
     time.sleep(scaled_delay)
+
+    if enter_backend == "wm_setfocus":
+        _send_wm_setfocus()
+        # Tiny pause for the window to process the focus message
+        time.sleep(0.05)
 
     _write_key(handle, "\r", True, vk=VK_RETURN, scan=0x1C)
     _write_key(handle, "\r", False, vk=VK_RETURN, scan=0x1C)
@@ -227,11 +257,11 @@ def get_activity_checker(pid_holder, agent_name="unknown", trigger_flag=None):
     return check
 
 
-def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, start_watcher, strip_env=None, pid_holder=None, session_name=None, inject_env=None, inject_delay: float = 0.3):
+def run_agent(command, extra_args, cwd, env, queue_file, agent, no_restart, start_watcher, strip_env=None, pid_holder=None, session_name=None, inject_env=None, inject_delay: float = 0.3, enter_backend: str = "console_input"):
     """Run agent as a direct subprocess, inject via Win32 console."""
     if inject_env:
         env = {**env, **inject_env}
-    start_watcher(lambda text: inject(text, delay=inject_delay))
+    start_watcher(lambda text: inject(text, delay=inject_delay, enter_backend=enter_backend))
 
     while True:
         try:

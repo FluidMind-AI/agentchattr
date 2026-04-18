@@ -885,6 +885,9 @@ def main():
         inject_env=inject_env,
         inject_delay=agent_cfg.get("inject_delay", 0.3),
     )
+    # Windows-only injection tuning (no-op on other platforms).
+    if sys.platform == "win32":
+        run_kwargs["enter_backend"] = agent_cfg.get("enter_backend", "console_input")
     if sys.platform != "win32":
         run_kwargs["session_name"] = unix_session_name
 

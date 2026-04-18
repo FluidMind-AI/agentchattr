@@ -57,6 +57,17 @@ mcp_settings_path = "~/.codebuddy/.mcp.json"
 mcp_transport = "http"
 mcp_http_key = "url"
 
+[agents.copilot]
+command = "copilot"
+cwd = ".."
+color = "#8534F3"
+label = "Copilot"
+mcp_inject = "settings_file"
+mcp_settings_path = "~/.copilot/mcp-config.json"
+mcp_transport = "http"
+mcp_http_key = "url"
+enter_backend = "wm_setfocus"
+
 [agents.minimax]
 type = "api"
 base_url = "https://api.minimax.io/v1"
