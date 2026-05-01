@@ -2990,24 +2990,10 @@ function buildMentionToggles() {
             remove.setAttribute('aria-label', `Remove ${cfg.label || name} from #${channel}`);
             remove.title = `Remove from #${channel}`;
             remove.innerHTML = '<svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-            remove.onclick = async (e) => {
+            remove.onclick = (e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                btn.classList.add('removing');
-                try {
-                    await fetch(`/api/channels/${encodeURIComponent(channel)}/members`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Session-Token': window.__SESSION_TOKEN__ || '',
-                        },
-                        body: JSON.stringify({ remove: [name] }),
-                    });
-                    // Server broadcasts settings → applySettings re-renders.
-                } catch (err) {
-                    btn.classList.remove('removing');
-                    console.error('Failed to remove agent from channel:', err);
-                }
+                showKickConfirm(btn, name, cfg.label || name, channel);
             };
             btn.appendChild(remove);
         }
@@ -3034,6 +3020,95 @@ function buildMentionToggles() {
     container.appendChild(addBtn);
 
     enableDragScroll(container);
+}
+
+// Confirmation popover for kicking an agent out of a channel.
+// Anchored above the pill that triggered it. Click outside / Esc / Cancel
+// closes without action; "Kick" performs the API call.
+function showKickConfirm(anchorEl, agentName, agentLabel, channel) {
+    // Tear down any existing instance to avoid stacking.
+    document.querySelectorAll('.kick-confirm-popover').forEach(el => el.remove());
+
+    const pop = document.createElement('div');
+    pop.className = 'kick-confirm-popover';
+    pop.innerHTML = `
+        <div class="kick-confirm-text">
+            Kick <strong></strong> from <span class="kick-confirm-channel">#${channel}</span>?
+        </div>
+        <div class="kick-confirm-actions">
+            <button class="kick-confirm-cancel" type="button">Cancel</button>
+            <button class="kick-confirm-go" type="button">Kick</button>
+        </div>
+    `;
+    pop.querySelector('strong').textContent = agentLabel;
+    document.body.appendChild(pop);
+
+    // Position above the anchor pill, clamped to the viewport.
+    const r = anchorEl.getBoundingClientRect();
+    const popW = pop.offsetWidth;
+    const popH = pop.offsetHeight;
+    const margin = 8;
+    let left = r.left + (r.width / 2) - (popW / 2);
+    left = Math.max(margin, Math.min(left, window.innerWidth - popW - margin));
+    let top = r.top - popH - 10;
+    if (top < margin) {
+        // Fall back to below the pill if we're too close to the top edge.
+        top = r.bottom + 10;
+        pop.classList.add('below');
+    }
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+
+    // Anchor pointer to roughly the pill's center.
+    const pointerX = r.left + (r.width / 2) - left;
+    pop.style.setProperty('--kick-pointer-x', `${Math.round(pointerX)}px`);
+
+    const close = () => {
+        pop.removeEventListener('animationend', noop);
+        pop.classList.add('closing');
+        pop.addEventListener('animationend', () => pop.remove(), { once: true });
+        document.removeEventListener('mousedown', onOutside, true);
+        document.removeEventListener('keydown', onKey, true);
+    };
+    const noop = () => {};
+    const onOutside = (e) => { if (!pop.contains(e.target)) close(); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    setTimeout(() => {
+        document.addEventListener('mousedown', onOutside, true);
+        document.addEventListener('keydown', onKey, true);
+    }, 0);
+
+    pop.querySelector('.kick-confirm-cancel').onclick = (e) => { e.stopPropagation(); close(); };
+    pop.querySelector('.kick-confirm-go').onclick = async (e) => {
+        e.stopPropagation();
+        const goBtn = e.currentTarget;
+        goBtn.disabled = true;
+        goBtn.textContent = 'Kicking…';
+        anchorEl.classList.add('removing');
+        try {
+            const resp = await fetch(`/api/channels/${encodeURIComponent(channel)}/members`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Session-Token': window.__SESSION_TOKEN__ || '',
+                },
+                body: JSON.stringify({ remove: [agentName] }),
+            });
+            if (!resp.ok) {
+                throw new Error(await resp.text());
+            }
+            close();
+            // Server broadcasts settings → applySettings rebuilds the pill row.
+        } catch (err) {
+            anchorEl.classList.remove('removing');
+            goBtn.disabled = false;
+            goBtn.textContent = 'Kick';
+            console.error('Failed to kick agent:', err);
+        }
+    };
+
+    // Default focus to Cancel — destructive button shouldn't be one-keystroke.
+    setTimeout(() => pop.querySelector('.kick-confirm-cancel').focus(), 30);
 }
 
 // --- Voice typing ---

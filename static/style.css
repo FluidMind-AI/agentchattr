@@ -1743,6 +1743,118 @@ main#timeline {
     transition: opacity 0.18s;
 }
 
+/* --- Kick-confirm popover (anchored to the mention pill being removed) --- */
+
+@keyframes kickConfirmIn {
+    from { opacity: 0; transform: translateY(4px) scale(0.96); }
+    to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+@keyframes kickConfirmOut {
+    from { opacity: 1; transform: translateY(0)   scale(1); }
+    to   { opacity: 0; transform: translateY(4px) scale(0.96); }
+}
+
+.kick-confirm-popover {
+    position: fixed;
+    z-index: 1100;
+    min-width: 240px;
+    max-width: 320px;
+    padding: 12px 14px 10px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, #ff6b6b 30%, transparent);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.04),
+        0 18px 40px -10px rgba(0, 0, 0, 0.6),
+        0 0 24px -8px color-mix(in srgb, #ff6b6b 35%, transparent);
+    animation: kickConfirmIn 160ms cubic-bezier(0.2, 0.9, 0.3, 1.05);
+    --kick-pointer-x: 50%;
+}
+.kick-confirm-popover.closing {
+    animation: kickConfirmOut 130ms ease-in forwards;
+    pointer-events: none;
+}
+
+/* Pointer triangle anchored toward the source pill. */
+.kick-confirm-popover::after {
+    content: "";
+    position: absolute;
+    bottom: -7px;
+    left: var(--kick-pointer-x);
+    transform: translateX(-50%) rotate(45deg);
+    width: 12px;
+    height: 12px;
+    background: var(--bg-elevated);
+    border-right: 1px solid color-mix(in srgb, #ff6b6b 30%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, #ff6b6b 30%, transparent);
+}
+.kick-confirm-popover.below::after {
+    bottom: auto;
+    top: -7px;
+    border-right: none;
+    border-bottom: none;
+    border-top: 1px solid color-mix(in srgb, #ff6b6b 30%, transparent);
+    border-left: 1px solid color-mix(in srgb, #ff6b6b 30%, transparent);
+}
+
+.kick-confirm-text {
+    font-size: 0.92em;
+    color: var(--text);
+    line-height: 1.45;
+}
+.kick-confirm-text strong {
+    color: var(--text-on-accent, #fff);
+    font-weight: 600;
+}
+.kick-confirm-channel {
+    color: var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.9em;
+}
+
+.kick-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+}
+.kick-confirm-actions button {
+    padding: 5px 12px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 0.86em;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    transition: background 0.12s, border-color 0.12s, transform 0.06s;
+}
+.kick-confirm-actions button:active { transform: translateY(1px); }
+.kick-confirm-cancel {
+    border-color: rgba(255, 255, 255, 0.1);
+}
+.kick-confirm-cancel:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+.kick-confirm-go {
+    background: rgba(255, 90, 90, 0.18);
+    color: #ffb0b0;
+    border-color: rgba(255, 90, 90, 0.4);
+    font-weight: 600;
+}
+.kick-confirm-go:hover {
+    background: rgba(255, 90, 90, 0.32);
+    color: #fff;
+    border-color: rgba(255, 90, 90, 0.65);
+}
+.kick-confirm-go:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
 /* --- "+" add-agent pill on the mention-toggles row --- */
 
 .mention-toggle.mention-add {
