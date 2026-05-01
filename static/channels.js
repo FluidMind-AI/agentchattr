@@ -56,26 +56,24 @@ function renderChannelTabs() {
             tab.appendChild(dot);
         }
 
-        // Members badge — always visible. Shows count when channel is
-        // restricted (acts as status indicator + click target). Subtle when
-        // open. Click opens the management modal.
+        // Members count indicator — passive status only. Restricted channels
+        // show "👤 N", open channels show nothing. Editing is handled by the
+        // "+" button on the mention-toggles row above the composer.
         const memberCount = (window.channelMembers && window.channelMembers[name])
             ? window.channelMembers[name].length : 0;
-        const memBtn = document.createElement('button');
-        memBtn.className = 'ch-members-btn' + (memberCount > 0 ? ' restricted' : '');
-        memBtn.title = memberCount > 0
-            ? `${memberCount} agent${memberCount === 1 ? '' : 's'} in this channel — click to manage`
-            : 'Open to all agents — click to restrict';
-        memBtn.innerHTML = `
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="6" cy="5" r="2.4" stroke="currentColor" stroke-width="1.3"/>
-                <path d="M2 13c0-2 1.7-3.6 4-3.6s4 1.6 4 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                <path d="M11.5 6.5v3M10 8h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-            </svg>
-            ${memberCount > 0 ? `<span class="ch-members-count">${memberCount}</span>` : ''}
-        `;
-        memBtn.onclick = (e) => { e.stopPropagation(); showChannelMembersModal(name); };
-        tab.appendChild(memBtn);
+        if (memberCount > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'ch-members-badge restricted';
+            badge.title = `${memberCount} agent${memberCount === 1 ? '' : 's'} in this channel`;
+            badge.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span class="ch-members-count">${memberCount}</span>
+            `;
+            tab.appendChild(badge);
+        }
 
         // Edit + delete icons for non-general tabs (visible on hover via CSS)
         if (name !== 'general') {
@@ -101,7 +99,6 @@ function renderChannelTabs() {
 
         tab.onclick = (e) => {
             if (e.target.closest('.channel-tab-actions')) return;
-            if (e.target.closest('.ch-members-btn')) return;
             if (name === window.activeChannel) {
                 // Second click on active tab -- toggle edit controls
                 tab.classList.toggle('editing');
@@ -159,24 +156,22 @@ function renderChannelSidebar() {
             row.appendChild(dot);
         }
 
-        // Members button — always visible, shows count when restricted.
+        // Members count indicator — passive status only.
         const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
             ? window.channelMembers[name].length : 0;
-        const membersBtn = document.createElement('button');
-        membersBtn.className = 'ch-members-btn' + (memberCountSidebar > 0 ? ' restricted' : '');
-        membersBtn.title = memberCountSidebar > 0
-            ? `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel — click to manage`
-            : 'Open to all agents — click to restrict';
-        membersBtn.innerHTML = `
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="6" cy="5" r="2.4" stroke="currentColor" stroke-width="1.3"/>
-                <path d="M2 13c0-2 1.7-3.6 4-3.6s4 1.6 4 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                <path d="M11.5 6.5v3M10 8h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-            </svg>
-            ${memberCountSidebar > 0 ? `<span class="ch-members-count">${memberCountSidebar}</span>` : ''}
-        `;
-        membersBtn.onclick = (e) => { e.stopPropagation(); showChannelMembersModal(name); };
-        row.appendChild(membersBtn);
+        if (memberCountSidebar > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'ch-members-badge restricted';
+            badge.title = `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel`;
+            badge.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span class="ch-members-count">${memberCountSidebar}</span>
+            `;
+            row.appendChild(badge);
+        }
 
         const actions = document.createElement('span');
         actions.className = 'channel-sidebar-row-actions';

@@ -1681,43 +1681,58 @@ main#timeline {
     background: var(--white-10);
 }
 
-/* --- Channel members button (always visible — both tab and sidebar variants) --- */
+/* --- Passive members count indicator on channel tabs/rows --- */
 
-.ch-members-btn {
+.ch-members-badge {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     margin-left: 8px;
-    padding: 3px 6px;
-    background: transparent;
-    border: 1px solid transparent;
+    padding: 3px 7px;
     border-radius: 999px;
-    color: var(--text-dim, #9a9aa3);
-    cursor: pointer;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
     line-height: 1;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
     flex-shrink: 0;
+    pointer-events: none;
+    user-select: none;
 }
-.ch-members-btn:hover {
-    color: var(--accent, #8a9cff);
-    border-color: var(--white-10, rgba(255, 255, 255, 0.1));
-    background: var(--white-06, rgba(255, 255, 255, 0.05));
-}
-.ch-members-btn.restricted {
-    color: var(--accent, #8a9cff);
-    border-color: color-mix(in srgb, var(--accent, #8a9cff) 35%, transparent);
-    background: color-mix(in srgb, var(--accent, #8a9cff) 10%, transparent);
-}
-.ch-members-btn.restricted:hover {
-    background: color-mix(in srgb, var(--accent, #8a9cff) 18%, transparent);
-}
-.ch-members-btn svg { display: block; }
+.ch-members-badge svg { display: block; }
 .ch-members-count {
     font-size: 0.74em;
     font-weight: 600;
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
     line-height: 1;
+}
+
+/* --- "+" add-agent pill on the mention-toggles row --- */
+
+.mention-toggle.mention-add {
+    --agent-color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 11px 4px 9px;
+    border: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+    background: transparent;
+    color: color-mix(in srgb, var(--accent) 75%, var(--text-dim));
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.06s;
+    flex-shrink: 0;
+}
+.mention-toggle.mention-add:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    border-style: solid;
+    background: var(--accent-soft);
+}
+.mention-toggle.mention-add:active { transform: translateY(1px); }
+.mention-toggle.mention-add svg { display: block; }
+.mention-add-label {
+    font-size: 0.92em;
+    letter-spacing: 0.01em;
 }
 
 /* --- Channel members modal --- */
