@@ -113,7 +113,7 @@ def test_canonical_name_rename_does_not_break_token_persistence():
 
 
 def test_persisted_file_is_valid_json():
-    """The token file is valid JSON so it can be inspected and edited by hand."""
+    """The persistence file is valid JSON with the full identity snapshot per wrapper."""
     import json
     from pathlib import Path
 
@@ -121,10 +121,101 @@ def test_persisted_file_is_valid_json():
         reg = _make_registry(tmpdir)
         reg.register("claude", label="funky")
 
-        tokens_file = Path(tmpdir) / "agent_tokens.json"
-        assert tokens_file.exists()
-        data = json.loads(tokens_file.read_text("utf-8"))
+        path = Path(tmpdir) / "agent_identities.json"
+        assert path.exists()
+        data = json.loads(path.read_text("utf-8"))
 
         assert "claude|funky" in data
-        assert isinstance(data["claude|funky"], str)
-        assert len(data["claude|funky"]) == 32  # secrets.token_hex(16)
+        snapshot = data["claude|funky"]
+        assert isinstance(snapshot, dict)
+        assert "token" in snapshot and len(snapshot["token"]) == 32  # secrets.token_hex(16)
+        assert "name" in snapshot
+        assert "label" in snapshot
+        assert "slot" in snapshot
+        assert "color" in snapshot
+
+
+def test_canonical_name_and_label_restored_after_rename_and_restart():
+    """V2 promise: full identity (token + name + label + slot) survives across:
+    initial register → user rename via /api/label → server restart."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reg1 = _make_registry(tmpdir)
+        first = reg1.register("claude", label=None)
+        # User-facing rename via /api/label/{slot} flow
+        renamed = reg1.rename(first["name"], "funky", "funky")
+        assert isinstance(renamed, dict)
+        assert renamed["name"] == "funky"
+        assert renamed["label"] == "funky"
+        original_token = first["token"]
+
+        # Server restart simulation
+        reg2 = _make_registry(tmpdir)
+        # Same wrapper re-registers (sends original launch args)
+        recovered = reg2.register("claude", label=None)
+
+        # Same canonical name, same label, same token. Nothing for the user
+        # to clean up after the restart.
+        assert recovered["name"] == "funky"
+        assert recovered["label"] == "funky"
+        assert recovered["token"] == original_token
+
+
+def test_multiple_claudes_keep_their_identities_across_restart():
+    """4 wrappers of the same base, each renamed to a custom label, ALL recover
+    their exact identities across server restart — regardless of re-register order."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reg1 = _make_registry(tmpdir)
+        # Initial launch: funky (no label), then 3 labeled siblings.
+        # After the 2nd register, slot 1 ("claude") gets renamed to "claude-1".
+        f = reg1.register("claude", label=None)
+        r = reg1.register("claude", label="reviewer")
+        ra = reg1.register("claude", label="racer")
+        ar = reg1.register("claude", label="absolute-reviewer")
+
+        # User-facing rename for funky. Its current canonical name is now
+        # "claude-1" (auto-renamed by the slot1-rename when reviewer joined).
+        funky = reg1.rename("claude-1", "funky", "funky")
+        assert isinstance(funky, dict), f"rename failed: {funky}"
+        # Capture pre-restart identities
+        expected = {
+            (None,): {"name": funky["name"], "label": funky["label"], "token": f["token"]},
+            ("reviewer",): {"name": r["name"], "label": r["label"], "token": r["token"]},
+            ("racer",): {"name": ra["name"], "label": ra["label"], "token": ra["token"]},
+            ("absolute-reviewer",): {"name": ar["name"], "label": ar["label"], "token": ar["token"]},
+        }
+
+        # Server restart
+        reg2 = _make_registry(tmpdir)
+        # Re-register in REVERSE order — this would have shuffled slots in V1
+        ar2 = reg2.register("claude", label="absolute-reviewer")
+        ra2 = reg2.register("claude", label="racer")
+        r2 = reg2.register("claude", label="reviewer")
+        f2 = reg2.register("claude", label=None)
+
+        actual = {
+            (None,): {"name": f2["name"], "label": f2["label"], "token": f2["token"]},
+            ("reviewer",): {"name": r2["name"], "label": r2["label"], "token": r2["token"]},
+            ("racer",): {"name": ra2["name"], "label": ra2["label"], "token": ra2["token"]},
+            ("absolute-reviewer",): {"name": ar2["name"], "label": ar2["label"], "token": ar2["token"]},
+        }
+
+        assert actual == expected, "every wrapper should recover its exact identity regardless of re-register order"
+
+
+def test_v1_legacy_tokens_file_auto_migrated():
+    """Old agent_tokens.json (V1 format: {key: token_str}) is read on startup
+    and treated as partial entries. First register after upgrade falls back to
+    fresh allocation but reuses the token; subsequent re-registers are full restore."""
+    import json
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Seed the legacy V1 file
+        legacy = Path(tmpdir) / "agent_tokens.json"
+        legacy.write_text(json.dumps({"claude|reviewer": "0123456789abcdef0123456789abcdef"}))
+
+        reg = _make_registry(tmpdir)
+        result = reg.register("claude", label="reviewer")
+
+        # Token is preserved (the V1 promise still holds for the upgrade path)
+        assert result["token"] == "0123456789abcdef0123456789abcdef"

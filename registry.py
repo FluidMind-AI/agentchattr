@@ -29,6 +29,10 @@ class Instance:
     epoch: int = 1
     state: str = "pending"   # "pending" | "active"
     registered_at: float = field(default_factory=time.time)
+    # Wrapper's launch-time --label (immutable for the life of the wrapper).
+    # Used as the persistence key — survives canonical-name renames and label
+    # changes done via /api/label.
+    args_label: str | None = None
 
 
 class RuntimeRegistry:
@@ -40,11 +44,17 @@ class RuntimeRegistry:
         self._instances: dict[str, Instance] = {}   # canonical name → Instance
         self._reserved: dict[str, float] = {}       # name → deregister timestamp
         self._renames: dict[str, str] = {}           # old name → new name (for heartbeat redirect)
-        self._tokens: dict[str, str] = {}            # "base|label" → MCP auth token (persists across re-registrations)
+        # "base|label" → snapshot dict {token, name, label, slot, color}.
+        # Persists across server restarts so wrappers re-registering with the
+        # same launch (base, --label) get back their EXACT prior identity:
+        # same token (so inner agent's cached MCP bearer stays valid) AND
+        # same canonical name + display label (so user-facing chat handles
+        # don't shuffle).
+        self._identities: dict[str, dict] = {}
         self._on_change_cbs: list = []
         self._data_dir = Path(data_dir)
         self._load_renames()
-        self._load_tokens()
+        self._load_identities()
 
     # --- Setup ---
 
@@ -90,47 +100,87 @@ class RuntimeRegistry:
         except Exception:
             pass
 
-    # --- Token persistence ---
+    # --- Identity persistence ---
     #
-    # MCP auth tokens are persisted so that a wrapper re-registering after a
-    # server restart receives the SAME token it had before. This means the
-    # inner agent process (e.g. claude-code), which cached the bearer token at
-    # startup from its --mcp-config file, doesn't have to be restarted to
-    # recover.
+    # We persist a full snapshot of each wrapper's instance identity, keyed by
+    # the (base, --label) tuple the wrapper was launched with. On register, if
+    # the wrapper's (base, label) has a prior snapshot, we reclaim that EXACT
+    # identity — same token, same canonical name, same label, same slot —
+    # bypassing the next-free-slot allocator entirely. The result: a server
+    # restart is fully transparent to both the inner agent (token still valid)
+    # AND the user (chat handle still the same).
     #
-    # Keying: "base|label" — i.e. the (base, --label) tuple the wrapper was
-    # launched with. This is what the wrapper sends to /api/register on every
-    # registration (initial AND after a heartbeat-409 recovery — see
-    # wrapper.py:_heartbeat). It is stable across canonical-name renames done
-    # via /api/label, which only mutate the registry's internal name; the
-    # wrapper continues sending its original (base, label) on re-register.
+    # The persistence key is (base, --label) because that's what the wrapper
+    # sends to /api/register on every call, including the heartbeat-409
+    # recovery branch. It's stable across canonical-name renames via
+    # /api/label — those mutate the snapshot's stored name/label fields but
+    # not the lookup key.
+    #
+    # Backwards-compat: V1 of this patch stored token-only entries (str
+    # values) in agent_tokens.json. We auto-migrate on load: such entries are
+    # treated as having only the token field, so the first re-register after
+    # upgrade falls back to fresh-slot allocation; subsequent registrations
+    # are full restore.
 
     def _token_key(self, base: str, label: str | None) -> str:
-        """Key used to persist a wrapper's token across registrations."""
+        """Persistence key for a wrapper identified by its launch args."""
         return f"{base}|{label or ''}"
 
-    def _tokens_path(self) -> Path:
+    def _identities_path(self) -> Path:
+        return self._data_dir / "agent_identities.json"
+
+    def _legacy_tokens_path(self) -> Path:
         return self._data_dir / "agent_tokens.json"
 
-    def _load_tokens(self):
-        p = self._tokens_path()
-        if p.exists():
-            try:
-                self._tokens = json.loads(p.read_text("utf-8"))
-            except Exception:
-                self._tokens = {}
+    def _load_identities(self):
+        # Prefer the new file; fall back to V1's tokens-only file.
+        p_new = self._identities_path()
+        p_old = self._legacy_tokens_path()
+        path = p_new if p_new.exists() else p_old
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except Exception:
+            return
+        for k, v in data.items():
+            if isinstance(v, str):
+                # V1 format: token-only string. Partial entry; restore() will
+                # fall through to fresh allocation, then capture full state.
+                self._identities[k] = {"token": v}
+            elif isinstance(v, dict):
+                self._identities[k] = v
 
-    def _save_tokens(self):
-        """Persist token map to disk. Must be called outside the lock."""
+    def _save_identities(self):
+        """Persist identities map to disk. Must be called outside the lock."""
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._tokens_path().with_suffix(".tmp")
+            tmp = self._identities_path().with_suffix(".tmp")
             with self._lock:
-                data = dict(self._tokens)
+                data = dict(self._identities)
             tmp.write_text(json.dumps(data), "utf-8")
-            tmp.replace(self._tokens_path())
+            tmp.replace(self._identities_path())
         except Exception:
             pass
+
+    def _capture(self, inst: "Instance") -> dict:
+        """Snapshot of an Instance suitable for persistence."""
+        return {
+            "token": inst.token,
+            "name": inst.name,
+            "label": inst.label,
+            "slot": inst.slot,
+            "color": inst.color,
+        }
+
+    def _persist_for(self, inst: "Instance"):
+        """Capture inst's current state into self._identities (in-memory).
+        Caller must invoke _save_identities() outside the lock to flush."""
+        if inst.args_label is None and inst.base not in self._bases:
+            # Defensive: don't persist for unknown bases.
+            return
+        key = self._token_key(inst.base, inst.args_label)
+        self._identities[key] = self._capture(inst)
 
     # --- Registration ---
 
@@ -146,69 +196,103 @@ class RuntimeRegistry:
 
             self._expire_reserved()
 
-            # Find next free slot
-            taken = {i.slot for i in self._instances.values() if i.base == base}
-            reserved = set()
-            for rn in self._reserved:
-                rb, rs = self._parse_name(rn)
-                if rb == base:
-                    reserved.add(rs)
-
-            slot = 1
-            while slot in taken or slot in reserved:
-                slot += 1
-
-            # When a 2nd instance registers, rename slot-1 from "base" to "base-1"
-            # so that no instance shares a name with the base family.  This prevents
-            # a second instance from sending messages as "base" (identity theft).
-            renamed_slot1 = None
-            if slot >= 2 and base in self._instances:
-                slot1 = self._instances[base]
-                if slot1.base == base and slot1.slot == 1:
-                    new_s1_name = f"{base}-1"
-                    del self._instances[base]
-                    slot1.name = new_s1_name
-                    base_cfg = self._bases[base]
-                    slot1.label = f"{base_cfg.get('label', base.capitalize())} 1"
-                    # Color stays the same (slot 1 = base color)
-                    self._instances[new_s1_name] = slot1
-                    self._renames[base] = new_s1_name
-                    renamed_slot1 = {"old": base, "new": new_s1_name}
-
-            name = base if slot == 1 else f"{base}-{slot}"
-            base_cfg = self._bases[base]
-            color = _derive_color(base_cfg.get("color", "#888"), slot)
-
-            if label:
-                lbl = label
-            elif slot == 1:
-                lbl = base_cfg.get("label", base.capitalize())
-            else:
-                lbl = f"{base_cfg.get('label', base.capitalize())} {slot}"
-
-            # Fresh registrations are immediately authoritative. Identity
-            # recovery/reclaim still uses chat_claim, but normal startup should
-            # not block on a manual confirmation step.
-            state = "active"
-            # If this wrapper (identified by base+label) had a token in a prior
-            # session, reuse it so the wrapper's MCP config and the inner
-            # agent's cached bearer token stay valid across server restarts.
+            # ===== Identity reclaim path =====
+            # If this wrapper (identified by base + launch --label) has a
+            # full prior snapshot AND that prior canonical name is currently
+            # free, restore it exactly. Bypasses slot allocation, slot1-rename,
+            # label generation — all the things that would otherwise produce a
+            # different identity than the wrapper had before.
             tok_key = self._token_key(base, label)
-            prior_token = self._tokens.get(tok_key)
-            if prior_token:
-                inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state, token=prior_token)
+            prior = self._identities.get(tok_key)
+            if (
+                prior
+                and "name" in prior
+                and "label" in prior
+                and "slot" in prior
+                and "color" in prior
+                and "token" in prior
+                and prior["name"] not in self._instances
+                and prior["name"] not in self._reserved
+            ):
+                inst = Instance(
+                    name=prior["name"],
+                    base=base,
+                    slot=prior["slot"],
+                    label=prior["label"],
+                    color=prior["color"],
+                    state="active",
+                    token=prior["token"],
+                    args_label=label,
+                )
+                self._instances[inst.name] = inst
+                self._persist_for(inst)
+                result = _inst_dict(inst, include_token=True)
             else:
-                inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state)
-            self._tokens[tok_key] = inst.token
-            self._instances[name] = inst
-            result = _inst_dict(inst, include_token=True)
-            if renamed_slot1:
-                result["_renamed_slot1"] = renamed_slot1
+                # ===== Fresh allocation path =====
+                # Find next free slot
+                taken = {i.slot for i in self._instances.values() if i.base == base}
+                reserved = set()
+                for rn in self._reserved:
+                    rb, rs = self._parse_name(rn)
+                    if rb == base:
+                        reserved.add(rs)
 
+                slot = 1
+                while slot in taken or slot in reserved:
+                    slot += 1
+
+                # When a 2nd instance registers, rename slot-1 from "base" to "base-1"
+                # so that no instance shares a name with the base family.  This prevents
+                # a second instance from sending messages as "base" (identity theft).
+                renamed_slot1 = None
+                if slot >= 2 and base in self._instances:
+                    slot1 = self._instances[base]
+                    if slot1.base == base and slot1.slot == 1:
+                        new_s1_name = f"{base}-1"
+                        del self._instances[base]
+                        slot1.name = new_s1_name
+                        base_cfg = self._bases[base]
+                        slot1.label = f"{base_cfg.get('label', base.capitalize())} 1"
+                        # Color stays the same (slot 1 = base color)
+                        self._instances[new_s1_name] = slot1
+                        self._renames[base] = new_s1_name
+                        self._persist_for(slot1)  # slot1's identity changed
+                        renamed_slot1 = {"old": base, "new": new_s1_name}
+
+                name = base if slot == 1 else f"{base}-{slot}"
+                base_cfg = self._bases[base]
+                color = _derive_color(base_cfg.get("color", "#888"), slot)
+
+                if label:
+                    lbl = label
+                elif slot == 1:
+                    lbl = base_cfg.get("label", base.capitalize())
+                else:
+                    lbl = f"{base_cfg.get('label', base.capitalize())} {slot}"
+
+                state = "active"
+                # If a partial (V1 token-only) prior entry exists, reuse the token
+                # — keeps inner agents from going stale during the upgrade.
+                prior_token = (prior or {}).get("token") if prior else None
+                if prior_token:
+                    inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state, token=prior_token, args_label=label)
+                else:
+                    inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state, args_label=label)
+                self._instances[name] = inst
+                self._persist_for(inst)
+                result = _inst_dict(inst, include_token=True)
+                if renamed_slot1:
+                    result["_renamed_slot1"] = renamed_slot1
+
+        self._notify_and_save()
+        return result
+
+    def _notify_and_save(self):
+        """Common post-mutation: notify observers and flush both persistence files.
+        Called outside the lock by the public mutation methods."""
         self._notify()
         self._save_renames()
-        self._save_tokens()
-        return result
+        self._save_identities()
 
     def deregister(self, name: str) -> dict | None:
         """Remove an instance. Name is reserved for GRACE_PERIOD seconds.
@@ -239,10 +323,10 @@ class RuntimeRegistry:
                     remaining.color = _derive_color(base_cfg.get("color", "#888"), 1)
                     self._instances[base] = remaining
                     self._renames[old_name] = base
+                    self._persist_for(remaining)  # remaining instance's identity changed
                     renamed_back = {"old": old_name, "new": base}
 
-        self._notify()
-        self._save_renames()
+        self._notify_and_save()
         result = {"ok": True}
         if renamed_back:
             result["_renamed_back"] = renamed_back
@@ -334,12 +418,12 @@ class RuntimeRegistry:
                         self._instances[target_name] = inst
                         # Track rename so wrapper can discover it via heartbeat
                         self._renames[old_name] = target_name
+                        self._persist_for(inst)
                         result = _inst_dict(inst)
 
         if error:
             return error
-        self._notify()
-        self._save_renames()
+        self._notify_and_save()
         return result
 
     def confirm_pending(self, name: str) -> bool:
@@ -350,8 +434,7 @@ class RuntimeRegistry:
                 return False
             inst.state = "active"
 
-        self._notify()
-        self._save_renames()
+        self._notify_and_save()
         return True
 
     # --- Rename / Label ---
@@ -411,10 +494,13 @@ class RuntimeRegistry:
 
                 self._instances[new_name] = inst
                 self._renames[old_name] = new_name
+                self._persist_for(inst)
                 result = _inst_dict(inst)
+            # Same-name label-only branch above also needs persistence:
+            if new_name == old_name and label:
+                self._persist_for(inst)
 
-        self._notify()
-        self._save_renames()
+        self._notify_and_save()
         return result
 
     def set_label(self, name: str, label: str) -> bool:
@@ -424,9 +510,9 @@ class RuntimeRegistry:
             if not inst:
                 return False
             inst.label = label
+            self._persist_for(inst)
 
-        self._notify()
-        self._save_renames()
+        self._notify_and_save()
         return True
 
     # --- Queries ---
