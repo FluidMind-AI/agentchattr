@@ -583,11 +583,15 @@ def main():
     parser.add_argument("--mcp-http-port", default=None, help="Override mcp.http_port (int)")
     parser.add_argument("--mcp-sse-port",  default=None, help="Override mcp.sse_port (int)")
     parser.add_argument("--upload-dir",    default=None, help="Override images.upload_dir (path)")
+    parser.add_argument("--cwd",           default=None, help="Override the inner agent's working directory (absolute path or relative to engine root)")
     args, extra = parser.parse_known_args()
 
     agent = args.agent
     agent_cfg = config.get("agents", {}).get(agent, {})
-    cwd = agent_cfg.get("cwd", ".")
+    # CLI --cwd overrides the per-base cwd in config.toml. Lets distinct
+    # wrappers of the same base run in different project dirs (e.g. funky in
+    # ~/notonote, racer in ~/CRM).
+    cwd = args.cwd if args.cwd is not None else agent_cfg.get("cwd", ".")
     command = agent_cfg.get("command", agent)
     data_dir = ROOT / config.get("server", {}).get("data_dir", "./data")
     data_dir.mkdir(parents=True, exist_ok=True)
