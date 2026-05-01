@@ -40,9 +40,11 @@ class RuntimeRegistry:
         self._instances: dict[str, Instance] = {}   # canonical name → Instance
         self._reserved: dict[str, float] = {}       # name → deregister timestamp
         self._renames: dict[str, str] = {}           # old name → new name (for heartbeat redirect)
+        self._tokens: dict[str, str] = {}            # "base|label" → MCP auth token (persists across re-registrations)
         self._on_change_cbs: list = []
         self._data_dir = Path(data_dir)
         self._load_renames()
+        self._load_tokens()
 
     # --- Setup ---
 
@@ -85,6 +87,48 @@ class RuntimeRegistry:
                 data = dict(self._renames)
             tmp.write_text(json.dumps(data), "utf-8")
             tmp.replace(self._renames_path())
+        except Exception:
+            pass
+
+    # --- Token persistence ---
+    #
+    # MCP auth tokens are persisted so that a wrapper re-registering after a
+    # server restart receives the SAME token it had before. This means the
+    # inner agent process (e.g. claude-code), which cached the bearer token at
+    # startup from its --mcp-config file, doesn't have to be restarted to
+    # recover.
+    #
+    # Keying: "base|label" — i.e. the (base, --label) tuple the wrapper was
+    # launched with. This is what the wrapper sends to /api/register on every
+    # registration (initial AND after a heartbeat-409 recovery — see
+    # wrapper.py:_heartbeat). It is stable across canonical-name renames done
+    # via /api/label, which only mutate the registry's internal name; the
+    # wrapper continues sending its original (base, label) on re-register.
+
+    def _token_key(self, base: str, label: str | None) -> str:
+        """Key used to persist a wrapper's token across registrations."""
+        return f"{base}|{label or ''}"
+
+    def _tokens_path(self) -> Path:
+        return self._data_dir / "agent_tokens.json"
+
+    def _load_tokens(self):
+        p = self._tokens_path()
+        if p.exists():
+            try:
+                self._tokens = json.loads(p.read_text("utf-8"))
+            except Exception:
+                self._tokens = {}
+
+    def _save_tokens(self):
+        """Persist token map to disk. Must be called outside the lock."""
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._tokens_path().with_suffix(".tmp")
+            with self._lock:
+                data = dict(self._tokens)
+            tmp.write_text(json.dumps(data), "utf-8")
+            tmp.replace(self._tokens_path())
         except Exception:
             pass
 
@@ -146,7 +190,16 @@ class RuntimeRegistry:
             # recovery/reclaim still uses chat_claim, but normal startup should
             # not block on a manual confirmation step.
             state = "active"
-            inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state)
+            # If this wrapper (identified by base+label) had a token in a prior
+            # session, reuse it so the wrapper's MCP config and the inner
+            # agent's cached bearer token stay valid across server restarts.
+            tok_key = self._token_key(base, label)
+            prior_token = self._tokens.get(tok_key)
+            if prior_token:
+                inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state, token=prior_token)
+            else:
+                inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state)
+            self._tokens[tok_key] = inst.token
             self._instances[name] = inst
             result = _inst_dict(inst, include_token=True)
             if renamed_slot1:
@@ -154,6 +207,7 @@ class RuntimeRegistry:
 
         self._notify()
         self._save_renames()
+        self._save_tokens()
         return result
 
     def deregister(self, name: str) -> dict | None:
