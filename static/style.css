@@ -1707,6 +1707,42 @@ main#timeline {
     line-height: 1;
 }
 
+/* --- Inline × on each mention pill: remove agent from current channel --- */
+
+.mention-toggle .mention-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    margin-left: 6px;
+    margin-right: -3px;
+    border-radius: 999px;
+    color: var(--text-dim);
+    opacity: 0;
+    transition: opacity 0.12s, background 0.12s, color 0.12s, transform 0.08s;
+    cursor: pointer;
+}
+/* Reveal on pill hover OR when this pill is keyboard-focused. */
+.mention-toggle:hover .mention-remove,
+.mention-toggle:focus-within .mention-remove {
+    opacity: 0.55;
+}
+.mention-toggle .mention-remove:hover {
+    opacity: 1;
+    background: rgba(255, 90, 90, 0.18);
+    color: #ff8c8c;
+}
+.mention-toggle .mention-remove:active { transform: scale(0.92); }
+.mention-toggle .mention-remove svg { display: block; }
+
+/* While the remove request is in-flight, dim the pill to give a hint of action. */
+.mention-toggle.removing {
+    opacity: 0.45;
+    pointer-events: none;
+    transition: opacity 0.18s;
+}
+
 /* --- "+" add-agent pill on the mention-toggles row --- */
 
 .mention-toggle.mention-add {

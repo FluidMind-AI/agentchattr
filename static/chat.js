@@ -2953,13 +2953,18 @@ function buildMentionToggles() {
     }
 
     const channel = window.activeChannel || 'general';
+    const channelRestricted = !isChannelOpen(channel);
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;  // skip pending instances
         if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
         btn.dataset.agent = name;
-        btn.textContent = `@${cfg.label || name}`;
+        // Use a label span so the inline ×-remove button can sit beside it.
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'mention-toggle-label';
+        labelSpan.textContent = `@${cfg.label || name}`;
+        btn.appendChild(labelSpan);
         btn.title = `@${name}`;  // Tooltip: canonical name
         btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild
@@ -2976,6 +2981,36 @@ function buildMentionToggles() {
             }
             updateSchedulePopoverState();
         };
+        // Inline ×: remove this agent from the channel. Only meaningful when
+        // the channel is restricted (open channels have nothing to remove from).
+        if (channelRestricted) {
+            const remove = document.createElement('span');
+            remove.className = 'mention-remove';
+            remove.setAttribute('role', 'button');
+            remove.setAttribute('aria-label', `Remove ${cfg.label || name} from #${channel}`);
+            remove.title = `Remove from #${channel}`;
+            remove.innerHTML = '<svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+            remove.onclick = async (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                btn.classList.add('removing');
+                try {
+                    await fetch(`/api/channels/${encodeURIComponent(channel)}/members`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Session-Token': window.__SESSION_TOKEN__ || '',
+                        },
+                        body: JSON.stringify({ remove: [name] }),
+                    });
+                    // Server broadcasts settings → applySettings re-renders.
+                } catch (err) {
+                    btn.classList.remove('removing');
+                    console.error('Failed to remove agent from channel:', err);
+                }
+            };
+            btn.appendChild(remove);
+        }
         container.appendChild(btn);
     }
 
