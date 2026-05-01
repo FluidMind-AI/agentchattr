@@ -1681,142 +1681,212 @@ main#timeline {
     background: var(--white-10);
 }
 
-/* Members button is dimly visible even without hover when the channel has
-   restrictions in place — gives a passive hint that this channel is gated. */
-.channel-sidebar-row-actions button.has-members {
-    opacity: 0.85;
+/* --- Channel members button (always visible — both tab and sidebar variants) --- */
+
+.ch-members-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 8px;
+    padding: 3px 6px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    color: var(--text-dim, #9a9aa3);
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    flex-shrink: 0;
+}
+.ch-members-btn:hover {
     color: var(--accent, #8a9cff);
+    border-color: var(--white-10, rgba(255, 255, 255, 0.1));
+    background: var(--white-06, rgba(255, 255, 255, 0.05));
 }
-.channel-sidebar-row:not(:hover) .channel-sidebar-row-actions:has(button.has-members) {
-    opacity: 1;
-    pointer-events: auto;
+.ch-members-btn.restricted {
+    color: var(--accent, #8a9cff);
+    border-color: color-mix(in srgb, var(--accent, #8a9cff) 35%, transparent);
+    background: color-mix(in srgb, var(--accent, #8a9cff) 10%, transparent);
 }
-.channel-sidebar-row:not(:hover) .channel-sidebar-row-actions:has(button.has-members) > button:not(.has-members) {
-    display: none;
+.ch-members-btn.restricted:hover {
+    background: color-mix(in srgb, var(--accent, #8a9cff) 18%, transparent);
+}
+.ch-members-btn svg { display: block; }
+.ch-members-count {
+    font-size: 0.74em;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
 }
 
 /* --- Channel members modal --- */
 
+@keyframes channelMembersBackdrop {
+    from { background: rgba(0, 0, 0, 0); backdrop-filter: blur(0px); }
+    to   { background: var(--bg-overlay); backdrop-filter: blur(4px); }
+}
+@keyframes channelMembersIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.985); }
+    to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
 .channel-members-modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--bg-overlay);
+    backdrop-filter: blur(4px);
     z-index: 1000;
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: channelMembersBackdrop 140ms ease-out;
 }
 
 .channel-members-modal {
-    background: var(--bg, #1c1c20);
-    color: var(--text, #e8e8ea);
-    border-radius: 8px;
-    width: 420px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border-radius: 12px;
+    width: 440px;
     max-width: 92vw;
-    max-height: 80vh;
+    max-height: 78vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
-    border: 1px solid var(--white-10, rgba(255, 255, 255, 0.08));
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.04),
+        0 24px 60px -12px rgba(0, 0, 0, 0.65),
+        0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+    overflow: hidden;
+    animation: channelMembersIn 200ms cubic-bezier(0.2, 0.9, 0.3, 1.05);
 }
 
 .channel-members-modal-header {
-    padding: 14px 18px 8px;
-    border-bottom: 1px solid var(--white-06, rgba(255, 255, 255, 0.06));
+    padding: 18px 20px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: linear-gradient(180deg,
+        color-mix(in srgb, var(--accent) 12%, transparent) 0%,
+        transparent 100%);
 }
 .channel-members-modal-title {
-    font-size: 1.05em;
+    font-size: 1.08em;
     font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-on-accent, #fff);
 }
 .channel-members-modal-subtitle {
     font-size: 0.82em;
-    color: var(--text-dim, #9a9aa3);
-    margin-top: 2px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    line-height: 1.4;
 }
 
 .channel-members-modal-search {
-    margin: 12px 18px 6px;
-    padding: 8px 10px;
-    border-radius: 6px;
-    border: 1px solid var(--white-10, rgba(255, 255, 255, 0.1));
-    background: var(--white-06, rgba(255, 255, 255, 0.04));
-    color: inherit;
+    margin: 14px 18px 8px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: var(--bg-input);
+    color: var(--text);
     font: inherit;
+    font-size: 0.95em;
+    transition: border-color 0.15s, box-shadow 0.15s;
 }
+.channel-members-modal-search::placeholder { color: var(--text-dim); }
 .channel-members-modal-search:focus {
-    border-color: var(--accent, #8a9cff);
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
     outline: none;
+    box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .channel-members-modal-list {
     overflow-y: auto;
-    padding: 4px 8px 8px;
+    padding: 4px 10px 10px;
     flex: 1;
     min-height: 80px;
-    max-height: 50vh;
+    max-height: 46vh;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 .channel-members-modal-empty {
-    padding: 16px;
-    color: var(--text-dim, #9a9aa3);
+    padding: 22px;
+    color: var(--text-dim);
     font-size: 0.9em;
     text-align: center;
+    font-style: italic;
 }
 .channel-members-modal-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: 6px;
+    gap: 12px;
+    padding: 9px 12px;
+    border-radius: 8px;
     cursor: pointer;
     user-select: none;
+    transition: background 0.1s;
 }
 .channel-members-modal-row:hover {
-    background: var(--white-06, rgba(255, 255, 255, 0.06));
+    background: var(--accent-soft);
 }
 .channel-members-modal-row input[type="checkbox"] {
     margin: 0;
-    width: 15px;
-    height: 15px;
-    accent-color: var(--accent, #8a9cff);
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.channel-members-modal-row span:not(.channel-members-modal-handle) {
+    color: var(--text);
+    font-weight: 500;
 }
 .channel-members-modal-handle {
     margin-left: auto;
     font-size: 0.78em;
-    color: var(--text-dim, #9a9aa3);
-    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: 0.01em;
 }
 
 .channel-members-modal-footer {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    padding: 12px 18px;
-    border-top: 1px solid var(--white-06, rgba(255, 255, 255, 0.06));
+    gap: 10px;
+    padding: 14px 18px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    background: rgba(0, 0, 0, 0.18);
 }
 .channel-members-modal-footer button {
-    padding: 7px 14px;
-    border-radius: 6px;
-    border: 1px solid var(--white-10, rgba(255, 255, 255, 0.1));
+    padding: 8px 18px;
+    border-radius: 8px;
+    border: 1px solid transparent;
     background: transparent;
-    color: inherit;
+    color: var(--text);
     font: inherit;
+    font-size: 0.92em;
+    font-weight: 500;
     cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+.channel-members-modal-footer button:active { transform: translateY(1px); }
+.channel-members-modal-cancel {
+    border-color: rgba(255, 255, 255, 0.08);
 }
 .channel-members-modal-cancel:hover {
-    background: var(--white-06, rgba(255, 255, 255, 0.06));
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.16);
 }
 .channel-members-modal-save {
-    background: var(--accent, #8a9cff);
-    color: var(--accent-fg, #15151a);
-    border-color: transparent;
+    background: var(--accent);
+    color: var(--text-on-accent, #fff);
     font-weight: 600;
+    box-shadow: 0 2px 12px -2px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .channel-members-modal-save:hover {
-    filter: brightness(1.08);
+    background: color-mix(in srgb, var(--accent) 88%, white 12%);
 }
 .channel-members-modal-save:disabled {
-    opacity: 0.5;
+    opacity: 0.55;
     cursor: default;
+    box-shadow: none;
 }
 
 .channel-sidebar-grip {

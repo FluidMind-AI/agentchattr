@@ -56,6 +56,27 @@ function renderChannelTabs() {
             tab.appendChild(dot);
         }
 
+        // Members badge — always visible. Shows count when channel is
+        // restricted (acts as status indicator + click target). Subtle when
+        // open. Click opens the management modal.
+        const memberCount = (window.channelMembers && window.channelMembers[name])
+            ? window.channelMembers[name].length : 0;
+        const memBtn = document.createElement('button');
+        memBtn.className = 'ch-members-btn' + (memberCount > 0 ? ' restricted' : '');
+        memBtn.title = memberCount > 0
+            ? `${memberCount} agent${memberCount === 1 ? '' : 's'} in this channel — click to manage`
+            : 'Open to all agents — click to restrict';
+        memBtn.innerHTML = `
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="6" cy="5" r="2.4" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M2 13c0-2 1.7-3.6 4-3.6s4 1.6 4 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M11.5 6.5v3M10 8h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+            ${memberCount > 0 ? `<span class="ch-members-count">${memberCount}</span>` : ''}
+        `;
+        memBtn.onclick = (e) => { e.stopPropagation(); showChannelMembersModal(name); };
+        tab.appendChild(memBtn);
+
         // Edit + delete icons for non-general tabs (visible on hover via CSS)
         if (name !== 'general') {
             const actions = document.createElement('span');
@@ -80,6 +101,7 @@ function renderChannelTabs() {
 
         tab.onclick = (e) => {
             if (e.target.closest('.channel-tab-actions')) return;
+            if (e.target.closest('.ch-members-btn')) return;
             if (name === window.activeChannel) {
                 // Second click on active tab -- toggle edit controls
                 tab.classList.toggle('editing');
@@ -137,20 +159,27 @@ function renderChannelSidebar() {
             row.appendChild(dot);
         }
 
+        // Members button — always visible, shows count when restricted.
+        const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
+            ? window.channelMembers[name].length : 0;
+        const membersBtn = document.createElement('button');
+        membersBtn.className = 'ch-members-btn' + (memberCountSidebar > 0 ? ' restricted' : '');
+        membersBtn.title = memberCountSidebar > 0
+            ? `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel — click to manage`
+            : 'Open to all agents — click to restrict';
+        membersBtn.innerHTML = `
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="6" cy="5" r="2.4" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M2 13c0-2 1.7-3.6 4-3.6s4 1.6 4 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M11.5 6.5v3M10 8h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+            ${memberCountSidebar > 0 ? `<span class="ch-members-count">${memberCountSidebar}</span>` : ''}
+        `;
+        membersBtn.onclick = (e) => { e.stopPropagation(); showChannelMembersModal(name); };
+        row.appendChild(membersBtn);
+
         const actions = document.createElement('span');
         actions.className = 'channel-sidebar-row-actions';
-
-        // "+ members" — manage which agents are visible in this channel.
-        // Available on all channels including #general.
-        const membersBtn = document.createElement('button');
-        const memberCount = (window.channelMembers && window.channelMembers[name]) ? window.channelMembers[name].length : 0;
-        membersBtn.title = memberCount > 0
-            ? `Manage agents (${memberCount} restricted)`
-            : 'Manage agents (open — all visible)';
-        if (memberCount > 0) membersBtn.classList.add('has-members');
-        membersBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M5 7a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM2 13c0-2 1.5-3.5 3-3.5s3 1.5 3 3.5M11 8.5h3M12.5 7v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-        membersBtn.onclick = (e) => { e.stopPropagation(); showChannelMembersModal(name); };
-        actions.appendChild(membersBtn);
 
         if (name !== 'general') {
             const editBtn = document.createElement('button');
