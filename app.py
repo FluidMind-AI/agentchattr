@@ -1636,6 +1636,34 @@ async def get_settings():
     return room_settings
 
 
+# --- Channel API ---
+#
+# Channels are also creatable via WebSocket events for the in-app UI; the
+# REST endpoint here is for scripted/idempotent setup (e.g. notolink's
+# ops/configure-channels.sh).
+
+@app.post("/api/channels")
+async def create_channel_api(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    name = (body.get("name") or "").strip().lower()
+    if not name or not _CHANNEL_NAME_RE.match(name):
+        return JSONResponse(
+            {"error": "name must match ^[a-z0-9][a-z0-9-]{0,19}$"},
+            status_code=400,
+        )
+    if name in room_settings.get("channels", []):
+        return {"channel": name, "created": False}
+    if len(room_settings.get("channels", [])) >= MAX_CHANNELS:
+        return JSONResponse({"error": f"channel limit reached ({MAX_CHANNELS})"}, status_code=400)
+    room_settings.setdefault("channels", []).append(name)
+    _save_settings()
+    await broadcast_settings()
+    return {"channel": name, "created": True}
+
+
 # --- Channel membership API ---
 #
 # Restricts which agents are visible/usable in each channel. Empty list = open
