@@ -1707,34 +1707,49 @@ main#timeline {
     line-height: 1;
 }
 
-/* --- Inline × on each mention pill: remove agent from current channel --- */
+/* --- Inline × on each mention pill: remove agent from current channel ---
+   Compact by default — the × takes zero width and zero margin, so the pill
+   is no wider than its label. On hover, the × expands to its natural size
+   with a smooth slide. */
 
 .mention-toggle .mention-remove {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
-    margin-left: 6px;
-    margin-right: -3px;
+    width: 0;
+    height: 14px;
+    margin-left: 0;
+    margin-right: -2px;
+    overflow: hidden;
     border-radius: 999px;
     color: var(--text-dim);
     opacity: 0;
-    transition: opacity 0.12s, background 0.12s, color 0.12s, transform 0.08s;
     cursor: pointer;
+    transition:
+        width 0.16s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-left 0.16s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.12s,
+        background 0.12s,
+        color 0.12s,
+        transform 0.08s;
 }
 /* Reveal on pill hover OR when this pill is keyboard-focused. */
 .mention-toggle:hover .mention-remove,
 .mention-toggle:focus-within .mention-remove {
+    width: 14px;
+    margin-left: 5px;
     opacity: 0.55;
 }
 .mention-toggle .mention-remove:hover {
     opacity: 1;
-    background: rgba(255, 90, 90, 0.18);
+    background: rgba(255, 90, 90, 0.2);
     color: #ff8c8c;
 }
-.mention-toggle .mention-remove:active { transform: scale(0.92); }
-.mention-toggle .mention-remove svg { display: block; }
+.mention-toggle .mention-remove:active { transform: scale(0.9); }
+.mention-toggle .mention-remove svg {
+    display: block;
+    flex-shrink: 0;
+}
 
 /* While the remove request is in-flight, dim the pill to give a hint of action. */
 .mention-toggle.removing {

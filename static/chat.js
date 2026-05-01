@@ -967,9 +967,24 @@ function recolorMessages() {
         // Update bubble color
         const bubble = el.querySelector('.chat-bubble');
         if (bubble) bubble.style.setProperty('--bubble-color', color);
-        // Update avatar color
+        // Update avatar color AND glyph (the SVG depends on the agent's
+        // base, which only becomes known after the 'agents' WebSocket event
+        // arrives — historical messages rendered before that fall through
+        // to USER_AVATAR, so re-derive here once the config is in).
         const avatar = el.querySelector('.avatar');
-        if (avatar) avatar.style.backgroundColor = color;
+        if (avatar) {
+            avatar.style.backgroundColor = color;
+            const newSvg = getAvatarSvg(name);
+            if (newSvg && avatar.innerHTML !== newSvg) {
+                avatar.innerHTML = newSvg;
+            }
+        }
+        // Mirror the data-agent attribute on the wrap so per-agent CSS / hats stay in sync.
+        const wrap = el.querySelector('.avatar-wrap');
+        if (wrap) {
+            const resolvedKey = (resolveAgent(name.toLowerCase()) || name).toLowerCase();
+            if (wrap.dataset.agent !== resolvedKey) wrap.dataset.agent = resolvedKey;
+        }
         // Re-render markdown with updated mention colors and hashtags
         const textEl = el.querySelector('.msg-text');
         if (textEl && el.dataset.rawText) {
