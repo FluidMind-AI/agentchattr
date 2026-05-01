@@ -234,6 +234,15 @@ def chat_send(
     # Final fallback if still nothing: original 'general' behavior.
     if not channel and not job_id:
         channel = "general"
+    # Channel membership gate: non-members can't post into a restricted channel
+    # (jobs inherit their channel's roster — checked via job.channel below).
+    if channel and sender:
+        try:
+            import app as _app
+            if hasattr(_app, "agent_can_use_channel") and not _app.agent_can_use_channel(sender, channel):
+                return f"Error: agent '{sender}' is not a member of channel #{channel}. Ask the user to add you via the channel's '+' affordance, or send to a channel you belong to."
+        except Exception:
+            pass
     # Block pending instances (identity not yet confirmed)
     if registry and registry.is_pending(sender):
         return "Error: identity not confirmed. Call chat_claim(sender=your_base_name) to get your identity."
@@ -621,6 +630,16 @@ def chat_read(
         return json.dumps(out, ensure_ascii=False)
 
     ch = channel if channel else None
+    # Channel membership gate: if the channel has an explicit member list,
+    # only listed agents can read it. Open channels (no list) admit everyone.
+    if ch and sender:
+        try:
+            import app as _app
+            if hasattr(_app, "agent_can_use_channel") and not _app.agent_can_use_channel(sender, ch):
+                return f"Error: agent '{sender}' is not a member of channel #{ch}. Ask the user to add you via the channel's '+' affordance, or pick a channel you belong to."
+        except Exception:
+            # If anything goes wrong importing/calling, fall open (don't block).
+            pass
     # Remember the channel this agent just read so chat_send without an
     # explicit channel defaults here instead of falling back to "general".
     # Only record when a specific channel was requested — broad reads

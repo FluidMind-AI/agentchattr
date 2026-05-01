@@ -1133,7 +1133,9 @@ document.addEventListener('keydown', (e) => {
 function buildStatusPills() {
     const container = document.getElementById('agent-status');
     container.innerHTML = '';
+    const channel = window.activeChannel || 'general';
     for (const [name, cfg] of Object.entries(agentConfig)) {
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         const pill = document.createElement('div');
         pill.className = 'status-pill';
         if (cfg.state === 'pending') pill.classList.add('pending');
@@ -1777,7 +1779,39 @@ function applySettings(data) {
             switchChannel(name);
         }
     }
+    // Channel-scoped agent membership.
+    if (data.channel_members && typeof data.channel_members === 'object') {
+        window.channelMembers = data.channel_members;
+        // Re-render pill / mention strips so the active channel's filter applies.
+        try { buildStatusPills(); } catch (_) {}
+        try { buildMentionToggles(); } catch (_) {}
+        if (typeof renderChannelSidebar === 'function') {
+            try { renderChannelSidebar(); } catch (_) {}
+        }
+    }
 }
+
+// Channel membership helpers consumed by the rendering filters below.
+window.channelMembers = window.channelMembers || {};
+
+function getChannelMembers(channel) {
+    const m = window.channelMembers && window.channelMembers[channel];
+    return Array.isArray(m) ? m : [];
+}
+
+function isChannelOpen(channel) {
+    return getChannelMembers(channel).length === 0;
+}
+
+function isAgentInChannel(agentName, channel) {
+    if (!channel) return true;
+    if (isChannelOpen(channel)) return true;
+    return getChannelMembers(channel).indexOf(agentName) !== -1;
+}
+
+window.getChannelMembers = getChannelMembers;
+window.isChannelOpen = isChannelOpen;
+window.isAgentInChannel = isAgentInChannel;
 
 function toggleSettings() {
     const bar = document.getElementById('settings-bar');
@@ -2918,8 +2952,10 @@ function buildMentionToggles() {
         if (!(name in agentConfig)) activeMentions.delete(name);
     }
 
+    const channel = window.activeChannel || 'general';
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;  // skip pending instances
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
         btn.dataset.agent = name;

@@ -55,6 +55,11 @@ room_settings: dict = {
     "history_limit": "all",
     "contrast": "normal",
     "custom_roles": [],
+    # channel_members: {channel_name: [agent_name, ...]}.
+    # Empty list (or missing key) = channel is OPEN — every agent can read,
+    # send, and be @-mentioned. Non-empty list = restricted: only listed
+    # agents are allowed in/visible to this channel.
+    "channel_members": {},
 }
 
 # Channel validation
@@ -144,6 +149,72 @@ def _save_settings():
     p = _settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(room_settings, indent=2), "utf-8")
+
+
+# --- Channel membership ---
+#
+# Each channel can have an explicit member list. Empty/missing = OPEN (every
+# registered agent is allowed). Non-empty = restricted to the listed agents.
+# Membership is persisted in settings.json under "channel_members".
+#
+# The listed names are CANONICAL agent names (the keys exposed by /api/status,
+# i.e. what the registry returns from register/claim). With the V2 identity-
+# persistence patch in place, those are stable across server restarts.
+
+def get_channel_members(channel: str) -> list[str]:
+    """Return the explicit member list for a channel, or [] if open."""
+    if not channel:
+        return []
+    members = room_settings.get("channel_members", {}).get(channel, [])
+    return list(members) if isinstance(members, list) else []
+
+
+def is_channel_open(channel: str) -> bool:
+    """A channel is OPEN iff no explicit member list is set (backwards compat)."""
+    return len(get_channel_members(channel)) == 0
+
+
+def agent_can_use_channel(agent_name: str, channel: str) -> bool:
+    """True iff the channel is open OR the agent is an explicit member."""
+    if not channel:
+        return True
+    if is_channel_open(channel):
+        return True
+    return agent_name in get_channel_members(channel)
+
+
+def set_channel_members(channel: str, agents: list[str]) -> None:
+    """Replace the member list for a channel. Empty list = re-open the channel."""
+    members_map = room_settings.setdefault("channel_members", {})
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for a in agents or []:
+        if isinstance(a, str) and a and a not in seen:
+            seen.add(a)
+            deduped.append(a)
+    if deduped:
+        members_map[channel] = deduped
+    else:
+        members_map.pop(channel, None)
+    _save_settings()
+
+
+def add_channel_members(channel: str, agents: list[str]) -> list[str]:
+    """Add agents to a channel's member list. Returns the post-update list."""
+    current = get_channel_members(channel)
+    for a in agents or []:
+        if isinstance(a, str) and a and a not in current:
+            current.append(a)
+    set_channel_members(channel, current)
+    return get_channel_members(channel)
+
+
+def remove_channel_members(channel: str, agents: list[str]) -> list[str]:
+    """Remove agents from a channel's member list. Returns the post-update list."""
+    current = [a for a in get_channel_members(channel) if a not in (agents or [])]
+    set_channel_members(channel, current)
+    return get_channel_members(channel)
 
 
 def _extract_agent_token(request: Request) -> str:
@@ -803,6 +874,11 @@ async def _handle_new_message(msg: dict):
             targets.append(t)
     targets = list(dict.fromkeys(targets))  # dedupe, preserve order
 
+    # Channel membership gate: drop targets that aren't members of this
+    # channel. Open channels (no explicit member list) admit everyone.
+    if channel:
+        targets = [t for t in targets if agent_can_use_channel(t, channel)]
+
     if router.is_paused(channel):
         # Only emit the loop guard notice once per pause
         if not router.is_guard_emitted(channel):
@@ -1371,6 +1447,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 idx = room_settings["channels"].index(old_name)
                 room_settings["channels"][idx] = new_name
                 store.rename_channel(old_name, new_name)
+                # Rekey channel_members to follow the rename.
+                _members_map = room_settings.setdefault("channel_members", {})
+                if old_name in _members_map:
+                    _members_map[new_name] = _members_map.pop(old_name)
                 import mcp_bridge
                 mcp_bridge.migrate_cursors_rename(old_name, new_name)
                 _save_settings()
@@ -1395,9 +1475,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 room_settings["channels"].remove(name)
                 store.delete_channel(name)
+                # Drop channel_members entry so the slot doesn't leak.
+                room_settings.get("channel_members", {}).pop(name, None)
                 import mcp_bridge
                 mcp_bridge.migrate_cursors_delete(name)
                 _save_settings()
+                await broadcast_settings()
+
+            elif event.get("type") == "channel_set_members":
+                name = (event.get("name") or "").strip().lower()
+                agents_list = event.get("agents") or []
+                if name not in room_settings["channels"]:
+                    continue
+                if not isinstance(agents_list, list):
+                    continue
+                set_channel_members(name, [str(a) for a in agents_list])
                 await broadcast_settings()
 
     except WebSocketDisconnect:
@@ -1542,6 +1634,62 @@ async def get_status():
 @app.get("/api/settings")
 async def get_settings():
     return room_settings
+
+
+# --- Channel membership API ---
+#
+# Restricts which agents are visible/usable in each channel. Empty list = open
+# channel (every agent allowed; backwards-compat default). Used by both the
+# web UI's "+ add agents" affordance and ops scripts.
+
+@app.get("/api/channels/{name}/members")
+async def get_channel_members_api(name: str):
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    members = get_channel_members(name)
+    return {"channel": name, "members": members, "open": len(members) == 0}
+
+
+@app.put("/api/channels/{name}/members")
+async def put_channel_members_api(name: str, request: Request):
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    agents_list = body.get("agents")
+    if not isinstance(agents_list, list):
+        return JSONResponse({"error": "body must contain 'agents' list"}, status_code=400)
+    set_channel_members(name, [str(a) for a in agents_list])
+    await broadcast_settings()
+    members = get_channel_members(name)
+    return {"channel": name, "members": members, "open": len(members) == 0}
+
+
+@app.post("/api/channels/{name}/members")
+async def patch_channel_members_api(name: str, request: Request):
+    """Incremental update: add or remove specific agents from a channel."""
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    add = body.get("add") or []
+    remove = body.get("remove") or []
+    if not isinstance(add, list) or not isinstance(remove, list):
+        return JSONResponse({"error": "add/remove must be lists"}, status_code=400)
+    if add:
+        add_channel_members(name, [str(a) for a in add])
+    if remove:
+        remove_channel_members(name, [str(a) for a in remove])
+    await broadcast_settings()
+    members = get_channel_members(name)
+    return {"channel": name, "members": members, "open": len(members) == 0}
 
 
 @app.delete("/api/hat/{agent_name}")
@@ -1943,6 +2091,10 @@ async def post_job_message(job_id: int, request: Request):
             else:
                 targets.append(t)
         targets = list(dict.fromkeys(targets))
+
+        # Channel membership gate: jobs inherit their channel's roster.
+        if channel:
+            targets = [t for t in targets if agent_can_use_channel(t, channel)]
 
         import mcp_bridge
         chat_msg = f"{sender}: {text}" if text else ""
