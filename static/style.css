@@ -3508,6 +3508,7 @@ footer {
 
 #mention-toggles {
     display: flex;
+    align-items: center;     /* don't stretch pills to the tallest sibling */
     gap: 6px;
     overflow-x: auto;
     scrollbar-width: none;
@@ -3533,6 +3534,8 @@ footer {
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s;
+    white-space: nowrap;     /* keep labels on one line; row scrolls if it overflows */
+    flex-shrink: 0;          /* don't squeeze pills when the row is tight */
 }
 
 .mention-toggle:hover {
