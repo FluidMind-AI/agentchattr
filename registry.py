@@ -212,8 +212,12 @@ class RuntimeRegistry:
                 and "color" in prior
                 and "token" in prior
                 and prior["name"] not in self._instances
-                and prior["name"] not in self._reserved
             ):
+                # The prior canonical name might still be in _reserved from
+                # the wrapper's own deregister grace period — that's fine,
+                # the persistence key matches so this is the same wrapper
+                # coming back. Drop the reservation so the slot is free.
+                self._reserved.pop(prior["name"], None)
                 inst = Instance(
                     name=prior["name"],
                     base=base,
@@ -271,9 +275,16 @@ class RuntimeRegistry:
                     lbl = f"{base_cfg.get('label', base.capitalize())} {slot}"
 
                 state = "active"
-                # If a partial (V1 token-only) prior entry exists, reuse the token
-                # — keeps inner agents from going stale during the upgrade.
-                prior_token = (prior or {}).get("token") if prior else None
+                # Reuse the prior token ONLY for V1 partial entries (token-only
+                # snapshots created by the legacy migration path) — that keeps
+                # the inner agent's cached bearer valid during the V1→V2
+                # upgrade window. For full V2 snapshots whose canonical name
+                # is already taken (a sibling collided), we fall through to a
+                # fresh token; otherwise every same-base no-label wrapper
+                # would alias to the same bearer and resolve_token would mix
+                # them up.
+                is_v1_partial_entry = bool(prior) and "name" not in prior
+                prior_token = prior["token"] if is_v1_partial_entry else None
                 if prior_token:
                     inst = Instance(name=name, base=base, slot=slot, label=lbl, color=color, state=state, token=prior_token, args_label=label)
                 else:

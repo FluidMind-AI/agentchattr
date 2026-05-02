@@ -219,3 +219,53 @@ def test_v1_legacy_tokens_file_auto_migrated():
 
         # Token is preserved (the V1 promise still holds for the upgrade path)
         assert result["token"] == "0123456789abcdef0123456789abcdef"
+
+
+def test_same_base_no_label_siblings_get_distinct_tokens():
+    """Multiple wrappers of the same base launched WITHOUT --label must each
+    get their OWN bearer token. The persistence key (base, "") collapses for
+    all no-label same-base wrappers, but that key is shared SLOT data — tokens
+    must remain per-instance, otherwise registry.resolve_token aliases them
+    and any sibling can authenticate as any other."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reg = _make_registry(tmpdir)
+
+        first = reg.register("claude", label=None)
+        second = reg.register("claude", label=None)
+        third = reg.register("claude", label=None)
+
+        tokens = [first["token"], second["token"], third["token"]]
+        assert len(set(tokens)) == 3, f"expected three distinct tokens, got {tokens}"
+
+        # Each token must map to a distinct live instance.
+        # (The first instance's canonical name flips from "claude" to
+        # "claude-1" via slot1-rename when the 2nd registers, so we don't
+        # compare against the pre-rename names returned at register time —
+        # we just require three different resolutions.)
+        resolved = {
+            reg.resolve_token(t)["name"] for t in tokens
+        }
+        assert len(resolved) == 3, f"resolve_token aliased siblings: {resolved}"
+
+
+def test_v1_partial_entry_token_reuse_does_not_leak_to_siblings():
+    """The V1 migration path reuses the legacy token for the FIRST register
+    that matches the (base, label) key — but a subsequent same-key register
+    must NOT also inherit that token. Otherwise V1 -> V2 upgrade silently
+    aliases sibling no-label wrappers."""
+    import json
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        legacy = Path(tmpdir) / "agent_tokens.json"
+        legacy.write_text(json.dumps({"claude|": "deadbeefdeadbeefdeadbeefdeadbeef"}))
+
+        reg = _make_registry(tmpdir)
+        first = reg.register("claude", label=None)
+        second = reg.register("claude", label=None)
+
+        # First re-register reuses the V1 token (so the inner agent's cached
+        # bearer remains valid through the upgrade).
+        assert first["token"] == "deadbeefdeadbeefdeadbeefdeadbeef"
+        # Second sibling MUST get its own fresh token.
+        assert second["token"] != first["token"]
