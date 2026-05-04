@@ -1747,10 +1747,12 @@ function updateTyping(agent, active) {
 let pendingChannelSwitch = null;
 
 function applySettings(data) {
-    if (data.title) {
-        document.getElementById('room-title').textContent = data.title;
-        document.title = data.title;
-    }
+    // Brand "NotoLink" is product-level chrome; do not let server-side room
+    // titles overwrite the h1 or the browser tab. (Round-1 redesign.)
+    // if (data.title) {
+    //     document.getElementById('room-title').textContent = data.title;
+    //     document.title = data.title;
+    // }
     if (data.username) {
         username = data.username;
         document.getElementById('sender-label').textContent = username;

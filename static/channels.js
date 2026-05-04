@@ -156,23 +156,9 @@ function renderChannelSidebar() {
             row.appendChild(dot);
         }
 
-        // Members count indicator — passive status only.
-        const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
-            ? window.channelMembers[name].length : 0;
-        if (memberCountSidebar > 0) {
-            const badge = document.createElement('span');
-            badge.className = 'ch-members-badge restricted';
-            badge.title = `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel`;
-            badge.innerHTML = `
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
-                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                </svg>
-                <span class="ch-members-count">${memberCountSidebar}</span>
-            `;
-            row.appendChild(badge);
-        }
-
+        // Build actions slot first so the members badge can render after it
+        // (keeps the badge column-aligned across all rows: rows without
+        // edit/delete buttons would otherwise pull the badge left).
         const actions = document.createElement('span');
         actions.className = 'channel-sidebar-row-actions';
 
@@ -191,6 +177,24 @@ function renderChannelSidebar() {
         }
 
         row.appendChild(actions);
+
+        // Members count indicator — passive status only. Rendered after actions
+        // so it sits at the far right edge of every row consistently.
+        const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
+            ? window.channelMembers[name].length : 0;
+        if (memberCountSidebar > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'ch-members-badge restricted';
+            badge.title = `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel`;
+            badge.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span class="ch-members-count">${memberCountSidebar}</span>
+            `;
+            row.appendChild(badge);
+        }
 
         row.onclick = (e) => {
             if (e.target.closest('.channel-sidebar-row-actions')) return;
@@ -679,7 +683,7 @@ function _restoreSidebarState() {
             panel.style.width = savedWidth + 'px';
         }
     }
-    const savedMode = localStorage.getItem(SIDEBAR_MODE_KEY) || 'top';
+    const savedMode = localStorage.getItem(SIDEBAR_MODE_KEY) || 'sidebar';
     setChannelSidebarMode(savedMode, false);
 }
 
