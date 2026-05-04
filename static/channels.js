@@ -56,6 +56,25 @@ function renderChannelTabs() {
             tab.appendChild(dot);
         }
 
+        // Members count indicator — passive status only. Restricted channels
+        // show "👤 N", open channels show nothing. Editing is handled by the
+        // "+" button on the mention-toggles row above the composer.
+        const memberCount = (window.channelMembers && window.channelMembers[name])
+            ? window.channelMembers[name].length : 0;
+        if (memberCount > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'ch-members-badge restricted';
+            badge.title = `${memberCount} agent${memberCount === 1 ? '' : 's'} in this channel`;
+            badge.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span class="ch-members-count">${memberCount}</span>
+            `;
+            tab.appendChild(badge);
+        }
+
         // Edit + delete icons for non-general tabs (visible on hover via CSS)
         if (name !== 'general') {
             const actions = document.createElement('span');
@@ -137,10 +156,27 @@ function renderChannelSidebar() {
             row.appendChild(dot);
         }
 
-        if (name !== 'general') {
-            const actions = document.createElement('span');
-            actions.className = 'channel-sidebar-row-actions';
+        // Members count indicator — passive status only.
+        const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
+            ? window.channelMembers[name].length : 0;
+        if (memberCountSidebar > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'ch-members-badge restricted';
+            badge.title = `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel`;
+            badge.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
+                    <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span class="ch-members-count">${memberCountSidebar}</span>
+            `;
+            row.appendChild(badge);
+        }
 
+        const actions = document.createElement('span');
+        actions.className = 'channel-sidebar-row-actions';
+
+        if (name !== 'general') {
             const editBtn = document.createElement('button');
             editBtn.title = 'Rename';
             editBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M11.5 2.5l2 2L5 13H3v-2L11.5 2.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
@@ -152,9 +188,9 @@ function renderChannelSidebar() {
             delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V3h4v1M5 4v8.5h6V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
             delBtn.onclick = (e) => { e.stopPropagation(); _sidebarConfirmDelete(name, row, label); };
             actions.appendChild(delBtn);
-
-            row.appendChild(actions);
         }
+
+        row.appendChild(actions);
 
         row.onclick = (e) => {
             if (e.target.closest('.channel-sidebar-row-actions')) return;
@@ -300,6 +336,14 @@ function switchChannel(name) {
     localStorage.setItem('agentchattr-channel', name);
     filterMessagesByChannel();
     renderChannelTabs();
+    renderChannelSidebar();
+    // Re-render the agent strips so they reflect the new channel's roster.
+    if (typeof buildStatusPills === 'function') {
+        try { buildStatusPills(); } catch (_) {}
+    }
+    if (typeof buildMentionToggles === 'function') {
+        try { buildMentionToggles(); } catch (_) {}
+    }
     Store.set('activeChannel', name);
     // Restore: scroll to saved message, or bottom if none saved
     const savedId = _channelScrollMsg[name];
@@ -680,3 +724,149 @@ window.showChannelRenameDialog = showChannelRenameDialog;
 window.renderChannelSidebar = renderChannelSidebar;
 window.setChannelSidebarMode = setChannelSidebarMode;
 window.Channels = { init: _channelsInit };
+
+
+// ---------------------------------------------------------------------------
+// Channel members modal
+// ---------------------------------------------------------------------------
+//
+// Opens when the user clicks the "+ members" icon on a channel row.
+// Shows a search-filterable checkbox list of all registered agents; checked
+// items become the channel's explicit member list. Empty list = the channel
+// is "open" (all agents allowed — backwards-compatible default).
+
+function showChannelMembersModal(channelName) {
+    // Tear down any prior instance.
+    document.querySelectorAll('.channel-members-modal-backdrop').forEach(el => el.remove());
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'channel-members-modal-backdrop';
+
+    const modal = document.createElement('div');
+    modal.className = 'channel-members-modal';
+
+    const header = document.createElement('div');
+    header.className = 'channel-members-modal-header';
+    const title = document.createElement('div');
+    title.className = 'channel-members-modal-title';
+    title.textContent = `Manage agents in #${channelName}`;
+    const subtitle = document.createElement('div');
+    subtitle.className = 'channel-members-modal-subtitle';
+    subtitle.textContent = 'Empty = open (all agents). Check agents to restrict to that set.';
+    header.appendChild(title);
+    header.appendChild(subtitle);
+    modal.appendChild(header);
+
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.placeholder = 'Search agents…';
+    search.className = 'channel-members-modal-search';
+    modal.appendChild(search);
+
+    const list = document.createElement('div');
+    list.className = 'channel-members-modal-list';
+    modal.appendChild(list);
+
+    const footer = document.createElement('div');
+    footer.className = 'channel-members-modal-footer';
+    const cancel = document.createElement('button');
+    cancel.className = 'channel-members-modal-cancel';
+    cancel.textContent = 'Cancel';
+    const save = document.createElement('button');
+    save.className = 'channel-members-modal-save';
+    save.textContent = 'Save';
+    footer.appendChild(cancel);
+    footer.appendChild(save);
+    modal.appendChild(footer);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    const currentMembers = new Set((window.channelMembers && window.channelMembers[channelName]) || []);
+    const allAgents = Object.entries(window.agentConfig || {})
+        .filter(([_, cfg]) => cfg && cfg.state !== 'pending')
+        .map(([name, cfg]) => ({ name, label: cfg.label || name }));
+    allAgents.sort((a, b) => a.label.localeCompare(b.label));
+
+    function renderList(filterText) {
+        list.innerHTML = '';
+        const q = (filterText || '').toLowerCase();
+        const matches = allAgents.filter(a =>
+            !q || a.label.toLowerCase().includes(q) || a.name.toLowerCase().includes(q)
+        );
+        if (matches.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'channel-members-modal-empty';
+            empty.textContent = 'No matching agents.';
+            list.appendChild(empty);
+            return;
+        }
+        for (const agent of matches) {
+            const row = document.createElement('label');
+            row.className = 'channel-members-modal-row';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = currentMembers.has(agent.name);
+            cb.dataset.agent = agent.name;
+            cb.onchange = () => {
+                if (cb.checked) currentMembers.add(agent.name);
+                else currentMembers.delete(agent.name);
+            };
+            const txt = document.createElement('span');
+            txt.textContent = agent.label;
+            const handle = document.createElement('span');
+            handle.className = 'channel-members-modal-handle';
+            handle.textContent = '@' + agent.name;
+            row.appendChild(cb);
+            row.appendChild(txt);
+            row.appendChild(handle);
+            list.appendChild(row);
+        }
+    }
+    renderList('');
+    search.oninput = () => renderList(search.value);
+    setTimeout(() => search.focus(), 50);
+
+    const close = () => backdrop.remove();
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    cancel.onclick = close;
+    document.addEventListener('keydown', function onEsc(e) {
+        if (e.key === 'Escape') {
+            close();
+            document.removeEventListener('keydown', onEsc);
+        }
+    });
+
+    save.onclick = async () => {
+        const sessionToken = window.__SESSION_TOKEN__ || '';
+        const agents = Array.from(currentMembers);
+        save.disabled = true;
+        save.textContent = 'Saving…';
+        try {
+            const resp = await fetch(`/api/channels/${encodeURIComponent(channelName)}/members`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Session-Token': sessionToken,
+                },
+                body: JSON.stringify({ agents }),
+            });
+            if (!resp.ok) {
+                const err = await resp.text();
+                save.disabled = false;
+                save.textContent = 'Save';
+                alert('Failed to save: ' + err);
+                return;
+            }
+            // The server will broadcast a settings update which re-renders the
+            // sidebar + pills. Just close the modal.
+            close();
+        } catch (err) {
+            save.disabled = false;
+            save.textContent = 'Save';
+            alert('Failed to save: ' + err);
+        }
+    };
+}
+
+window.showChannelMembersModal = showChannelMembersModal;

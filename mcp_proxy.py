@@ -194,11 +194,11 @@ class McpIdentityProxy:
                     for hdr, val in self.headers.items():
                         if hdr.lower() not in ("host",):
                             req.add_header(hdr, val)
-                    
+
                     req.add_header("Authorization", f"Bearer {proxy.token}")
                     req.add_header("X-Agent-Token", proxy.token)
 
-                    resp = urlopen(req, timeout=300)
+                    resp = urlopen(req, timeout=30)
                 except HTTPError as e:
                     status = e.code
                     resp_body = e.read()
@@ -216,6 +216,12 @@ class McpIdentityProxy:
                     self.send_error(502, f"Upstream error: {e}")
                     return
 
+                # Set a read timeout on the underlying socket so we detect
+                # dead connections quickly (e.g., after Mac sleep/wake).
+                sock = resp.fp.raw._sock if hasattr(resp.fp, 'raw') and hasattr(resp.fp.raw, '_sock') else None
+                if sock:
+                    sock.settimeout(60)
+
                 self.send_response(resp.status)
                 self._send_response_headers(resp.headers)
                 self.end_headers()
@@ -229,7 +235,7 @@ class McpIdentityProxy:
                             line = self._rewrite_sse_endpoint(line)
                         self.wfile.write(line)
                         self.wfile.flush()
-                except BrokenPipeError:
+                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
                     pass
 
             def do_DELETE(self):

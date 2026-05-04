@@ -967,9 +967,24 @@ function recolorMessages() {
         // Update bubble color
         const bubble = el.querySelector('.chat-bubble');
         if (bubble) bubble.style.setProperty('--bubble-color', color);
-        // Update avatar color
+        // Update avatar color AND glyph (the SVG depends on the agent's
+        // base, which only becomes known after the 'agents' WebSocket event
+        // arrives — historical messages rendered before that fall through
+        // to USER_AVATAR, so re-derive here once the config is in).
         const avatar = el.querySelector('.avatar');
-        if (avatar) avatar.style.backgroundColor = color;
+        if (avatar) {
+            avatar.style.backgroundColor = color;
+            const newSvg = getAvatarSvg(name);
+            if (newSvg && avatar.innerHTML !== newSvg) {
+                avatar.innerHTML = newSvg;
+            }
+        }
+        // Mirror the data-agent attribute on the wrap so per-agent CSS / hats stay in sync.
+        const wrap = el.querySelector('.avatar-wrap');
+        if (wrap) {
+            const resolvedKey = (resolveAgent(name.toLowerCase()) || name).toLowerCase();
+            if (wrap.dataset.agent !== resolvedKey) wrap.dataset.agent = resolvedKey;
+        }
         // Re-render markdown with updated mention colors and hashtags
         const textEl = el.querySelector('.msg-text');
         if (textEl && el.dataset.rawText) {
@@ -1133,7 +1148,9 @@ document.addEventListener('keydown', (e) => {
 function buildStatusPills() {
     const container = document.getElementById('agent-status');
     container.innerHTML = '';
+    const channel = window.activeChannel || 'general';
     for (const [name, cfg] of Object.entries(agentConfig)) {
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         const pill = document.createElement('div');
         pill.className = 'status-pill';
         if (cfg.state === 'pending') pill.classList.add('pending');
@@ -1777,7 +1794,39 @@ function applySettings(data) {
             switchChannel(name);
         }
     }
+    // Channel-scoped agent membership.
+    if (data.channel_members && typeof data.channel_members === 'object') {
+        window.channelMembers = data.channel_members;
+        // Re-render pill / mention strips so the active channel's filter applies.
+        try { buildStatusPills(); } catch (_) {}
+        try { buildMentionToggles(); } catch (_) {}
+        if (typeof renderChannelSidebar === 'function') {
+            try { renderChannelSidebar(); } catch (_) {}
+        }
+    }
 }
+
+// Channel membership helpers consumed by the rendering filters below.
+window.channelMembers = window.channelMembers || {};
+
+function getChannelMembers(channel) {
+    const m = window.channelMembers && window.channelMembers[channel];
+    return Array.isArray(m) ? m : [];
+}
+
+function isChannelOpen(channel) {
+    return getChannelMembers(channel).length === 0;
+}
+
+function isAgentInChannel(agentName, channel) {
+    if (!channel) return true;
+    if (isChannelOpen(channel)) return true;
+    return getChannelMembers(channel).indexOf(agentName) !== -1;
+}
+
+window.getChannelMembers = getChannelMembers;
+window.isChannelOpen = isChannelOpen;
+window.isAgentInChannel = isAgentInChannel;
 
 function toggleSettings() {
     const bar = document.getElementById('settings-bar');
@@ -2107,8 +2156,10 @@ function selectSlashCommand(cmd) {
 function getMentionCandidates() {
     // Build list: registered agents + "all agents" + username (self) + known humans
     const candidates = [];
+    const channel = window.activeChannel || 'general';
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         candidates.push({ name, label: cfg.label || name, color: cfg.color });
     }
     candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
@@ -2918,12 +2969,19 @@ function buildMentionToggles() {
         if (!(name in agentConfig)) activeMentions.delete(name);
     }
 
+    const channel = window.activeChannel || 'general';
+    const channelRestricted = !isChannelOpen(channel);
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;  // skip pending instances
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
         btn.dataset.agent = name;
-        btn.textContent = `@${cfg.label || name}`;
+        // Use a label span so the inline ×-remove button can sit beside it.
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'mention-toggle-label';
+        labelSpan.textContent = `@${cfg.label || name}`;
+        btn.appendChild(labelSpan);
         btn.title = `@${name}`;  // Tooltip: canonical name
         btn.style.setProperty('--agent-color', colorOverrides[name] || cfg.color);
         // Restore active state for mentions that survived the rebuild
@@ -2940,9 +2998,134 @@ function buildMentionToggles() {
             }
             updateSchedulePopoverState();
         };
+        // Inline ×: remove this agent from the channel. Only meaningful when
+        // the channel is restricted (open channels have nothing to remove from).
+        if (channelRestricted) {
+            const remove = document.createElement('span');
+            remove.className = 'mention-remove';
+            remove.setAttribute('role', 'button');
+            remove.setAttribute('aria-label', `Remove ${cfg.label || name} from #${channel}`);
+            remove.title = `Remove from #${channel}`;
+            remove.innerHTML = '<svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+            remove.onclick = (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                showKickConfirm(btn, name, cfg.label || name, channel);
+            };
+            btn.appendChild(remove);
+        }
         container.appendChild(btn);
     }
+
+    // "+" pill — opens the channel-members modal for the active channel.
+    // Always last, so the agent pills stay visually grouped.
+    const addBtn = document.createElement('button');
+    addBtn.className = 'mention-toggle mention-add';
+    addBtn.title = `Manage agents in #${channel}`;
+    addBtn.innerHTML = `
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span class="mention-add-label">agent</span>
+    `;
+    addBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (typeof showChannelMembersModal === 'function') {
+            showChannelMembersModal(channel);
+        }
+    };
+    container.appendChild(addBtn);
+
     enableDragScroll(container);
+}
+
+// Confirmation popover for kicking an agent out of a channel.
+// Anchored above the pill that triggered it. Click outside / Esc / Cancel
+// closes without action; "Kick" performs the API call.
+function showKickConfirm(anchorEl, agentName, agentLabel, channel) {
+    // Tear down any existing instance to avoid stacking.
+    document.querySelectorAll('.kick-confirm-popover').forEach(el => el.remove());
+
+    const pop = document.createElement('div');
+    pop.className = 'kick-confirm-popover';
+    pop.innerHTML = `
+        <div class="kick-confirm-text">
+            Kick <strong></strong> from <span class="kick-confirm-channel">#${channel}</span>?
+        </div>
+        <div class="kick-confirm-actions">
+            <button class="kick-confirm-cancel" type="button">Cancel</button>
+            <button class="kick-confirm-go" type="button">Kick</button>
+        </div>
+    `;
+    pop.querySelector('strong').textContent = agentLabel;
+    document.body.appendChild(pop);
+
+    // Position above the anchor pill, clamped to the viewport.
+    const r = anchorEl.getBoundingClientRect();
+    const popW = pop.offsetWidth;
+    const popH = pop.offsetHeight;
+    const margin = 8;
+    let left = r.left + (r.width / 2) - (popW / 2);
+    left = Math.max(margin, Math.min(left, window.innerWidth - popW - margin));
+    let top = r.top - popH - 10;
+    if (top < margin) {
+        // Fall back to below the pill if we're too close to the top edge.
+        top = r.bottom + 10;
+        pop.classList.add('below');
+    }
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+
+    // Anchor pointer to roughly the pill's center.
+    const pointerX = r.left + (r.width / 2) - left;
+    pop.style.setProperty('--kick-pointer-x', `${Math.round(pointerX)}px`);
+
+    const close = () => {
+        pop.removeEventListener('animationend', noop);
+        pop.classList.add('closing');
+        pop.addEventListener('animationend', () => pop.remove(), { once: true });
+        document.removeEventListener('mousedown', onOutside, true);
+        document.removeEventListener('keydown', onKey, true);
+    };
+    const noop = () => {};
+    const onOutside = (e) => { if (!pop.contains(e.target)) close(); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    setTimeout(() => {
+        document.addEventListener('mousedown', onOutside, true);
+        document.addEventListener('keydown', onKey, true);
+    }, 0);
+
+    pop.querySelector('.kick-confirm-cancel').onclick = (e) => { e.stopPropagation(); close(); };
+    pop.querySelector('.kick-confirm-go').onclick = async (e) => {
+        e.stopPropagation();
+        const goBtn = e.currentTarget;
+        goBtn.disabled = true;
+        goBtn.textContent = 'Kicking…';
+        anchorEl.classList.add('removing');
+        try {
+            const resp = await fetch(`/api/channels/${encodeURIComponent(channel)}/members`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Session-Token': window.__SESSION_TOKEN__ || '',
+                },
+                body: JSON.stringify({ remove: [agentName] }),
+            });
+            if (!resp.ok) {
+                throw new Error(await resp.text());
+            }
+            close();
+            // Server broadcasts settings → applySettings rebuilds the pill row.
+        } catch (err) {
+            anchorEl.classList.remove('removing');
+            goBtn.disabled = false;
+            goBtn.textContent = 'Kick';
+            console.error('Failed to kick agent:', err);
+        }
+    };
+
+    // Default focus to Cancel — destructive button shouldn't be one-keystroke.
+    setTimeout(() => pop.querySelector('.kick-confirm-cancel').focus(), 30);
 }
 
 // --- Voice typing ---
