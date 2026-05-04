@@ -303,7 +303,7 @@
     border-radius: var(--radius-sm);
     background: var(--accent-soft);
     color: var(--accent);
-    border: 1px solid rgba(124, 58, 237, 0.25);
+    border: 1px solid hsla(214 90% 62% / 0.25);
 }
 
 /* Session banners in timeline */
@@ -315,8 +315,8 @@
 }
 
 .session-banner-start {
-    background: linear-gradient(90deg, transparent, rgba(124, 58, 237, 0.08), transparent);
-    border: 1px solid rgba(124, 58, 237, 0.19);
+    background: linear-gradient(90deg, transparent, hsla(214 90% 62% / 0.08), transparent);
+    border: 1px solid hsla(214 90% 62% / 0.19);
 }
 
 .session-banner-end {
@@ -434,8 +434,8 @@
 .session-start-btn:hover { opacity: 0.85; }
 
 .session-banner-phase {
-    background: linear-gradient(90deg, transparent, rgba(124, 58, 237, 0.03), transparent);
-    border: 1px dashed rgba(124, 58, 237, 0.15);
+    background: linear-gradient(90deg, transparent, hsla(214 90% 62% / 0.03), transparent);
+    border: 1px dashed hsla(214 90% 62% / 0.15);
     font-size: var(--fs-sm);
     color: var(--text-dim);
 }
@@ -443,7 +443,7 @@
 /* Output highlighting */
 .session-output {
     border-left: 3px solid var(--accent);
-    background: rgba(124, 58, 237, 0.03);
+    background: hsla(214 90% 62% / 0.03);
 }
 
 .session-output-flash {
@@ -452,7 +452,7 @@
 
 @keyframes session-output-pulse {
     0% { background: var(--accent-hover); }
-    100% { background: rgba(124, 58, 237, 0.03); }
+    100% { background: hsla(214 90% 62% / 0.03); }
 }
 
 .session-output-link {
@@ -546,9 +546,9 @@
 }
 
 .session-draft-btn-save.saved {
-    background: rgba(124, 58, 237, 0.14);
+    background: hsla(214 90% 62% / 0.14);
     color: var(--accent);
-    border-color: rgba(124, 58, 237, 0.35);
+    border-color: hsla(214 90% 62% / 0.35);
     cursor: default;
 }
 

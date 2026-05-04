@@ -954,6 +954,10 @@ function applyAgentConfig(data) {
     // Re-color any messages already rendered (e.g. from a reconnect)
     recolorMessages();
     updateJobReplyTargetUI();
+    // Channel member-count badges depend on which agents are registered.
+    if (typeof renderChannelTabs === 'function') {
+        try { renderChannelTabs(); } catch (_) {}
+    }
 }
 
 function recolorMessages() {
@@ -1747,10 +1751,12 @@ function updateTyping(agent, active) {
 let pendingChannelSwitch = null;
 
 function applySettings(data) {
-    if (data.title) {
-        document.getElementById('room-title').textContent = data.title;
-        document.title = data.title;
-    }
+    // Brand "NotoLink" is product-level chrome; do not let server-side room
+    // titles overwrite the h1 or the browser tab. (Round-1 redesign.)
+    // if (data.title) {
+    //     document.getElementById('room-title').textContent = data.title;
+    //     document.title = data.title;
+    // }
     if (data.username) {
         username = data.username;
         document.getElementById('sender-label').textContent = username;
@@ -4051,35 +4057,48 @@ function _openHelpAnchored(cardDefs) {
     // Track card elements + their defs for arrow drawing
     var cardEls = [];
 
-    // Populate top row (Agents, Jobs, Rules)
-    topCards.forEach(function(def) {
+    // Click on a card → raise it (and its row) above the others. Rows are
+    // their own stacking contexts so we bump both the card (within-row) and
+    // the row (across-row, escaping the SVG layer at z=10002). Reset on each
+    // click so only one card is raised at a time.
+    function raiseCard(card) {
+        var prev = overlay.querySelectorAll('.hg-card.hg-card--raised, .hg-row.hg-row--raised');
+        for (var i = 0; i < prev.length; i++) {
+            prev[i].classList.remove('hg-card--raised');
+            prev[i].classList.remove('hg-row--raised');
+        }
+        card.classList.add('hg-card--raised');
+        if (card.parentElement) card.parentElement.classList.add('hg-row--raised');
+    }
+    function makeCard(def) {
         var card = document.createElement('div');
         card.className = 'hg-card' + (def.light ? ' hg-card--light' : '') + (def.wide ? ' hg-card--wide' : '');
         card.id = def.id;
         card.innerHTML = def.html;
-        card.addEventListener('click', function(e) { e.stopPropagation(); });
+        card.addEventListener('click', function(e) {
+            e.stopPropagation();  // don't dismiss the help overlay
+            raiseCard(card);
+        });
+        return card;
+    }
+
+    // Populate top row (Agents, Jobs, Rules)
+    topCards.forEach(function(def) {
+        var card = makeCard(def);
         topRow.appendChild(card);
         cardEls.push({ el: card, def: def });
     });
 
     // Populate middle row (Channels)
     middleCards.forEach(function(def) {
-        var card = document.createElement('div');
-        card.className = 'hg-card' + (def.light ? ' hg-card--light' : '') + (def.wide ? ' hg-card--wide' : '');
-        card.id = def.id;
-        card.innerHTML = def.html;
-        card.addEventListener('click', function(e) { e.stopPropagation(); });
+        var card = makeCard(def);
         middleRow.appendChild(card);
         cardEls.push({ el: card, def: def });
     });
 
     // Populate bottom row (Sessions, Mentions, Scheduling)
     bottomCards.forEach(function(def) {
-        var card = document.createElement('div');
-        card.className = 'hg-card' + (def.light ? ' hg-card--light' : '') + (def.wide ? ' hg-card--wide' : '');
-        card.id = def.id;
-        card.innerHTML = def.html;
-        card.addEventListener('click', function(e) { e.stopPropagation(); });
+        var card = makeCard(def);
         bottomRow.appendChild(card);
         cardEls.push({ el: card, def: def });
     });
