@@ -2156,8 +2156,10 @@ function selectSlashCommand(cmd) {
 function getMentionCandidates() {
     // Build list: registered agents + "all agents" + username (self) + known humans
     const candidates = [];
+    const channel = window.activeChannel || 'general';
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;
+        if (!isAgentInChannel(name, channel)) continue;  // channel membership gate
         candidates.push({ name, label: cfg.label || name, color: cfg.color });
     }
     candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
