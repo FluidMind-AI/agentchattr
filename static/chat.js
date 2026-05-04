@@ -954,6 +954,10 @@ function applyAgentConfig(data) {
     // Re-color any messages already rendered (e.g. from a reconnect)
     recolorMessages();
     updateJobReplyTargetUI();
+    // Channel member-count badges depend on which agents are registered.
+    if (typeof renderChannelTabs === 'function') {
+        try { renderChannelTabs(); } catch (_) {}
+    }
 }
 
 function recolorMessages() {

@@ -26,6 +26,16 @@ function _getTopVisibleMsgId() {
     return null;
 }
 
+// Configured members of `channel` that are currently registered (present).
+// agentConfig is keyed by lowercase name; channel_members are stored
+// lowercase too, but normalize defensively. Used by the channel-tab badges
+// so the count reflects who's actually in the channel, not who's allowed.
+function _presentChannelMembers(channel) {
+    const cfg = (window.channelMembers && window.channelMembers[channel]) || [];
+    const reg = window.agentConfig || {};
+    return cfg.filter(m => reg[String(m).toLowerCase()]);
+}
+
 // ---------------------------------------------------------------------------
 // Render
 // ---------------------------------------------------------------------------
@@ -56,21 +66,25 @@ function renderChannelTabs() {
             tab.appendChild(dot);
         }
 
-        // Members count indicator — passive status only. Restricted channels
-        // show "👤 N", open channels show nothing. Editing is handled by the
-        // "+" button on the mention-toggles row above the composer.
-        const memberCount = (window.channelMembers && window.channelMembers[name])
+        // Members count indicator — reflects who's actually present
+        // (configured ∩ registered), not the configured ceiling. Hidden
+        // when 0 are present so empty channels don't claim members.
+        // Restricted-channel editing lives on the "+" pill above the composer.
+        const configuredCount = (window.channelMembers && window.channelMembers[name])
             ? window.channelMembers[name].length : 0;
-        if (memberCount > 0) {
+        const presentCount = _presentChannelMembers(name).length;
+        if (configuredCount > 0 && presentCount > 0) {
             const badge = document.createElement('span');
             badge.className = 'ch-members-badge restricted';
-            badge.title = `${memberCount} agent${memberCount === 1 ? '' : 's'} in this channel`;
+            badge.title = presentCount === configuredCount
+                ? `${presentCount} agent${presentCount === 1 ? '' : 's'} in this channel`
+                : `${presentCount} of ${configuredCount} agents online`;
             badge.innerHTML = `
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                     <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
                     <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
                 </svg>
-                <span class="ch-members-count">${memberCount}</span>
+                <span class="ch-members-count">${presentCount}</span>
             `;
             tab.appendChild(badge);
         }
@@ -178,20 +192,23 @@ function renderChannelSidebar() {
 
         row.appendChild(actions);
 
-        // Members count indicator — passive status only. Rendered after actions
-        // so it sits at the far right edge of every row consistently.
-        const memberCountSidebar = (window.channelMembers && window.channelMembers[name])
+        // Members count indicator — reflects who's actually present
+        // (configured ∩ registered). Hidden when 0 present.
+        const configuredCountSidebar = (window.channelMembers && window.channelMembers[name])
             ? window.channelMembers[name].length : 0;
-        if (memberCountSidebar > 0) {
+        const presentCountSidebar = _presentChannelMembers(name).length;
+        if (configuredCountSidebar > 0 && presentCountSidebar > 0) {
             const badge = document.createElement('span');
             badge.className = 'ch-members-badge restricted';
-            badge.title = `${memberCountSidebar} agent${memberCountSidebar === 1 ? '' : 's'} in this channel`;
+            badge.title = presentCountSidebar === configuredCountSidebar
+                ? `${presentCountSidebar} agent${presentCountSidebar === 1 ? '' : 's'} in this channel`
+                : `${presentCountSidebar} of ${configuredCountSidebar} agents online`;
             badge.innerHTML = `
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                     <circle cx="8" cy="6" r="2.6" stroke="currentColor" stroke-width="1.4"/>
                     <path d="M3 13c0-2.4 2.2-4 5-4s5 1.6 5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
                 </svg>
-                <span class="ch-members-count">${memberCountSidebar}</span>
+                <span class="ch-members-count">${presentCountSidebar}</span>
             `;
             row.appendChild(badge);
         }
