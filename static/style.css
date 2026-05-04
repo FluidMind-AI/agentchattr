@@ -4438,6 +4438,30 @@ footer {
     padding: 14px 16px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     animation: hgCardIn 0.3s ease both;
+    /* position+z-index so within-row siblings can be raised on click; cursor
+       and transition signal that cards are interactive (click to bring to
+       front when overlapping). */
+    position: relative;
+    z-index: 1;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.hg-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+    border-color: hsla(214 90% 62% / 0.35);
+}
+.hg-card.hg-card--raised {
+    z-index: 10;
+    border-color: hsla(214 90% 62% / 0.55);
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.7);
+}
+/* Raise the entire row that owns the active card so it stacks above
+   neighbouring rows (each row is its own stacking context at z-index 10001;
+   bumping the row escapes that context). 10003 sits above the SVG arrow
+   layer (10002) so the active card and its arrow-anchor remain unobscured. */
+.hg-row.hg-row--raised {
+    z-index: 10003;
 }
 .hg-card--light {
     background: rgba(20, 20, 31, 0.95);
