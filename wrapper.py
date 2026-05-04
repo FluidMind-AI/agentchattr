@@ -30,6 +30,15 @@ ROOT = Path(__file__).parent
 
 SERVER_NAME = "agentchattr"
 
+# Tools exposed by mcp_bridge.py. Used to emit per-tool auto-approve overrides
+# for the codex CLI (see proxy_flag handler in _apply_mcp_inject). Update when
+# new chat_* tools are added in mcp_bridge.py.
+_AGENTCHATTR_MCP_TOOLS = (
+    "chat_send", "chat_read", "chat_resync", "chat_join",
+    "chat_who", "chat_channels", "chat_summary", "chat_claim",
+    "chat_propose_job", "chat_rules", "chat_decision", "chat_set_hat",
+)
+
 
 # ---------------------------------------------------------------------------
 # Per-instance provider config
@@ -296,6 +305,27 @@ def _apply_mcp_inject(
                                   '-c mcp_servers.{server}.url="{url}"')
         expanded = template.format(server=SERVER_NAME, url=proxy_url or "")
         launch_args = expanded.split()
+
+        # Auto-approve all agentchattr tool calls. Codex CLI defaults to a
+        # per-tool approval prompt for MCP tools, which causes the inner agent
+        # to pause on every chat_send / chat_read and ask the user "Post as
+        # outsider in #..." — confusing UX and breaks autonomous operation.
+        # These -c overrides set every agentchattr tool to "auto" approval,
+        # shadowing any "approve" entries the user may have in
+        # ~/.codex/config.toml. Scope is limited to this MCP server, so
+        # codex's global sandbox + shell-command approval policies are
+        # untouched. (Per-tool entries override default_tools_approval_mode,
+        # so we set both belt-and-suspenders for users who pre-configured
+        # specific tools.)
+        for tool in _AGENTCHATTR_MCP_TOOLS:
+            launch_args.extend([
+                "-c",
+                f'mcp_servers.{SERVER_NAME}.tools.{tool}.approval_mode="auto"',
+            ])
+        launch_args.extend([
+            "-c",
+            f'mcp_servers.{SERVER_NAME}.default_tools_approval_mode="auto"',
+        ])
 
     return launch_args, inject_env, settings_path
 
