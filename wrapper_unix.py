@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -93,6 +94,8 @@ def run_agent(
     session_name=None,
     inject_env=None,
     inject_delay: float = 0.3,
+    initial_prompt: str | None = None,
+    initial_prompt_delay: float = 5.0,
 ):
     """Run agent inside a tmux session, inject via tmux send-keys."""
     _check_tmux()
@@ -146,6 +149,18 @@ def run_agent(
             if result.returncode != 0:
                 print(f"  Error: failed to create tmux session (exit {result.returncode})")
                 break
+
+            # If --initial-prompt was provided, inject it once after the inner
+            # CLI has had time to boot. Fire-and-forget; if the user attaches
+            # quickly the keystrokes still land because send-keys targets the
+            # session, not whoever is attached. Used by the SOP startup ritual
+            # (read CLAUDE.md → post 'online' → await instructions).
+            if initial_prompt:
+                def _fire_initial_prompt():
+                    time.sleep(initial_prompt_delay)
+                    inject(initial_prompt, tmux_session=session_name, delay=inject_delay)
+
+                threading.Thread(target=_fire_initial_prompt, daemon=True).start()
 
             # Attach — blocks until agent exits or user detaches (Ctrl+B, D)
             subprocess.run(["tmux", "attach-session", "-t", session_name])
