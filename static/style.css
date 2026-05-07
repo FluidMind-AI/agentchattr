@@ -399,102 +399,242 @@ header h1 {
 .dismiss-btn:hover { color: var(--text); }
 .dismiss-btn.danger:hover { color: var(--error-color); }
 
-/* --- Settings bar --- */
-
-#settings-bar {
+/* --- Settings page (full-screen replacement of the chat surface) -------- */
+/*
+ * Mirrors NotoNote's SettingsPage shape: sticky header + glass-strong card
+ * with horizontal tabs and section cards. Hand-ported to plain CSS — no
+ * Tailwind, no shadcn. The "np-" prefix stands for notolink-page.
+ */
+#settings-page {
+    position: fixed;
+    inset: 0;
+    z-index: 1500;
+    background: var(--bg, #0f0f17);
+    overflow: auto;
+    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+    color: var(--text, #e8e8f0);
+}
+#settings-page.hidden { display: none; }
+#app.settings-active > *:not(#settings-page) {
+    display: none;
+}
+.np-glass-strong {
+    background: rgba(15, 15, 23, 0.85);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.np-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 10px 16px;
-    background: var(--bg-header);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    flex-wrap: wrap;
-    overflow: hidden;
-    max-height: 500px;
-    opacity: 1;
-    transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease;
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 24px 32px 16px;
 }
-
-#settings-bar.hidden {
-    max-height: 0;
-    opacity: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    border-bottom: none;
-    pointer-events: none;
-}
-
-.settings-field {
+.np-back {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text, #e8e8f0);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
 }
-
-.settings-field label {
-    font-size: 12px;
-    color: var(--text-dim);
-    white-space: nowrap;
+.np-back:hover {
+    background: rgba(0, 188, 255, 0.1);
+    border-color: rgba(0, 188, 255, 0.4);
 }
-
-.settings-field input,
-.settings-field select {
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text);
-    padding: 4px 8px;
-    font-family: inherit;
-    font-size: 13px;
-    outline: none;
-    box-shadow: none;
+.np-title {
+    font-family: 'Bricolage Grotesque', 'Manrope', sans-serif;
+    font-weight: 700;
+    font-size: 28px;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin: 0;
+    background: linear-gradient(135deg, hsl(196 100% 70%), hsl(214 100% 75%));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
 }
-
-.settings-field input { width: 120px; }
-.settings-field input[type="number"] { width: 60px; }
-.settings-field select { width: 130px; }
-
-.settings-field input:focus,
-.settings-field select:focus {
-    border-color: var(--accent);
+.np-shell {
+    max-width: 72rem;
+    margin: 8px auto 64px;
+    border-radius: 24px;
+    overflow: hidden;
 }
-
-.settings-field input:disabled {
-    opacity: 0.35;
-    pointer-events: none;
-}
-
-/* --- Sound settings --- */
-
-.settings-divider {
-    width: 1px;
-    height: 24px;
-    background: var(--border);
-    flex-shrink: 0;
-}
-
-.settings-history-btns {
+.np-tabs {
     display: flex;
-    gap: 6px;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    overflow-x: auto;
+    scrollbar-width: thin;
 }
-.settings-btn {
-    background: var(--white-06);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    color: var(--text-dim);
-    padding: 4px 10px;
-    font-size: 11px;
+.np-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim, #aab);
+    font-size: 13px;
+    font-weight: 500;
     font-family: inherit;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    border-bottom: 2px solid transparent;
 }
-.settings-btn:hover {
-    background: var(--white-10);
-    color: var(--text);
+.np-tab:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text, #e8e8f0);
 }
-.settings-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+.np-tab.active {
+    color: hsl(196 100% 70%);
+    background: rgba(0, 188, 255, 0.1);
+    border-bottom-color: hsl(196 100% 60%);
+    font-weight: 600;
+}
+.np-tab svg { flex-shrink: 0; }
+.np-tab-content {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+.np-card {
+    background: rgba(15, 15, 23, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    padding: 24px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.np-card-title {
+    font-family: 'Bricolage Grotesque', 'Manrope', sans-serif;
+    font-weight: 600;
+    font-size: 17px;
+    margin: 0 0 4px;
+    color: var(--text, #e8e8f0);
+}
+.np-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+.np-row-actions {
+    justify-content: flex-start;
+    gap: 8px;
+}
+.np-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-dim, #aab);
+}
+.np-input {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    color: var(--text, #e8e8f0);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    height: 36px;
+    min-width: 180px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.np-input:focus {
+    border-color: rgba(0, 188, 255, 0.5);
+}
+.np-input-narrow {
+    min-width: 110px;
+    max-width: 140px;
+}
+.np-options {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.np-option {
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    background: transparent;
+    color: var(--text-dim, #aab);
+    padding: 8px 16px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.np-option:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--text, #e8e8f0);
+}
+.np-option.active {
+    border-color: hsl(196 100% 60%);
+    background: rgba(0, 188, 255, 0.1);
+    color: hsl(196 100% 70%);
+    font-weight: 600;
+}
+.np-hint {
+    font-size: 12px;
+    color: var(--text-dim, #aab);
+    margin: 0;
+    line-height: 1.5;
+}
+.np-placeholder {
+    font-size: 13px;
+    color: var(--text-dim, #aab);
+    font-style: italic;
+    margin: 0;
+}
+.np-btn {
+    background: rgba(0, 188, 255, 0.12);
+    border: 1px solid rgba(0, 188, 255, 0.4);
+    color: hsl(196 100% 75%);
+    padding: 8px 16px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.np-btn:hover {
+    background: rgba(0, 188, 255, 0.2);
+    border-color: rgba(0, 188, 255, 0.6);
+}
+
+/* Pill popover sound row (moved from #settings-bar). */
+.pill-popover-sound {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    color: var(--text, #e8e8f0);
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+}
+.pill-popover-sound:focus {
+    outline: none;
+    border-color: rgba(0, 188, 255, 0.5);
 }
 
 /* --- Toast notifications --- */
