@@ -393,11 +393,15 @@ def _build_provider_launch(
         token=token, mcp_cfg=mcp_cfg, project_dir=project_dir,
     )
 
-    # Per-base extra args from _BUILTIN_DEFAULTS / agent_cfg (e.g. claude's
-    # --permission-mode acceptEdits) come BEFORE user-supplied extras so the
-    # user can still override at the CLI.
-    builtin_extra = list(agent_cfg.get("extra_args", []) or [])
-    launch_args = [*mcp_args, *builtin_extra, *extra_args]
+    # Per-base extra args (e.g. claude's --permission-mode acceptEdits).
+    # Source: agent_cfg["extra_args"] if set in config.toml, else fall back
+    # to _BUILTIN_DEFAULTS[agent]["extra_args"]. User CLI extras come AFTER
+    # so they can still override repeated flags (most CLIs take last value).
+    # Explicit None check lets a user opt out with `extra_args = []` in TOML.
+    base_extra = agent_cfg.get("extra_args")
+    if base_extra is None:
+        base_extra = _BUILTIN_DEFAULTS.get(agent, {}).get("extra_args", [])
+    launch_args = [*mcp_args, *list(base_extra), *extra_args]
     launch_env = dict(env)
 
     return launch_args, launch_env, inject_env, settings_path
