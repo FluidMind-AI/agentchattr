@@ -183,6 +183,77 @@ def agent_can_use_channel(agent_name: str, channel: str) -> bool:
     return agent_name in get_channel_members(channel)
 
 
+# --- Channel-scoped settings (loop guard, rules refresh, etc.) ---
+#
+# Each channel can override a small set of room-level defaults. Persisted in
+# settings.json under "channel_settings": { "<channel>": { "<key>": <val> } }.
+# Empty/missing dict = inherit defaults from room_settings + cfg["routing"].
+
+def _channel_overrides(channel: str) -> dict:
+    if not channel:
+        return {}
+    overrides = room_settings.get("channel_settings", {}).get(channel, {})
+    return overrides if isinstance(overrides, dict) else {}
+
+
+def get_channel_max_hops(channel: str) -> int:
+    """Resolve the loop-guard ceiling for a channel.
+    Override > room default > config default > 4."""
+    overrides = _channel_overrides(channel)
+    if "max_agent_hops" in overrides:
+        try:
+            return int(overrides["max_agent_hops"])
+        except Exception:
+            pass
+    if "max_agent_hops" in room_settings:
+        try:
+            return int(room_settings["max_agent_hops"])
+        except Exception:
+            pass
+    return int(config.get("routing", {}).get("max_agent_hops", 4))
+
+
+def get_channel_rules_refresh(channel: str) -> int:
+    """Resolve the rules-refresh interval (seconds) for a channel.
+    Override > room default > 10."""
+    overrides = _channel_overrides(channel)
+    if "rules_refresh_interval" in overrides:
+        try:
+            return max(0, int(overrides["rules_refresh_interval"]))
+        except Exception:
+            pass
+    return max(0, int(room_settings.get("rules_refresh_interval", 10)))
+
+
+def get_channel_settings_resolved(channel: str) -> dict:
+    """Return a snapshot of the channel's effective settings, with override flags.
+    Used by GET /api/channels/{name}/settings to surface 'is overridden' state in UI."""
+    overrides = _channel_overrides(channel)
+    return {
+        "channel": channel,
+        "max_agent_hops": {
+            "value": get_channel_max_hops(channel),
+            "overridden": "max_agent_hops" in overrides,
+        },
+        "rules_refresh_interval": {
+            "value": get_channel_rules_refresh(channel),
+            "overridden": "rules_refresh_interval" in overrides,
+        },
+    }
+
+
+def set_channel_setting(channel: str, key: str, value):
+    """Set a per-channel override. Pass value=None to clear."""
+    settings_map = room_settings.setdefault("channel_settings", {})
+    ch_dict = settings_map.setdefault(channel, {})
+    if value is None:
+        ch_dict.pop(key, None)
+        if not ch_dict:
+            settings_map.pop(channel, None)
+    else:
+        ch_dict[key] = value
+
+
 def set_channel_members(channel: str, agents: list[str]) -> None:
     """Replace the member list for a channel. Empty list = re-open the channel."""
     members_map = room_settings.setdefault("channel_members", {})
@@ -357,6 +428,11 @@ def configure(cfg: dict, session_token: str = ""):
         default_mention=cfg.get("routing", {}).get("default", "none"),
         max_hops=max_hops,
         online_checker=lambda: set(registry.get_active_names()) if registry else set(),
+        # Per-channel hop ceiling: channel_settings override > room default >
+        # config default. Resolver pulls live from room_settings on every hop,
+        # so changing the value via PUT /api/channels/{name}/settings or via
+        # the global Defaults setting takes effect immediately, no restart.
+        max_hops_resolver=get_channel_max_hops,
     )
     agents = AgentTrigger(registry, data_dir=data_dir)
 
@@ -1727,6 +1803,89 @@ async def delete_hat(agent_name: str):
     return JSONResponse({"ok": True})
 
 
+# --- Channel-scoped settings (loop guard, rules refresh) ---
+#
+# Per-channel overrides for a small allow-list of room-level defaults.
+# Persisted in settings.json under "channel_settings".
+
+_CHANNEL_SETTING_KEYS = {"max_agent_hops", "rules_refresh_interval"}
+
+
+@app.get("/api/channels/{name}/settings")
+async def get_channel_settings_api(name: str):
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    return JSONResponse(get_channel_settings_resolved(name))
+
+
+@app.put("/api/channels/{name}/settings")
+async def put_channel_settings_api(name: str, request: Request):
+    """Update per-channel settings. Body keys: max_agent_hops, rules_refresh_interval.
+    Pass `null` to clear an override (channel reverts to global default)."""
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    changes = 0
+    for key, value in body.items():
+        if key not in _CHANNEL_SETTING_KEYS:
+            return JSONResponse(
+                {"error": f"unsupported channel setting: {key}"},
+                status_code=400,
+            )
+        if value is None:
+            set_channel_setting(name, key, None)
+            changes += 1
+            continue
+        try:
+            ivalue = int(value)
+        except Exception:
+            return JSONResponse({"error": f"{key} must be an integer or null"}, status_code=400)
+        if key == "max_agent_hops":
+            if ivalue < 1 or ivalue > 50:
+                return JSONResponse({"error": "max_agent_hops must be 1..50"}, status_code=400)
+        elif key == "rules_refresh_interval":
+            if ivalue < 0 or ivalue > 600:
+                return JSONResponse({"error": "rules_refresh_interval must be 0..600"}, status_code=400)
+        set_channel_setting(name, key, ivalue)
+        changes += 1
+    if changes:
+        _save_settings()
+        await broadcast_settings()
+    return JSONResponse(get_channel_settings_resolved(name))
+
+
+@app.get("/api/channels/{name}/export")
+async def export_channel(name: str):
+    """Download a zip archive scoped to a single channel's chat history.
+    Project-wide export at /api/export covers everything; this is the
+    channel-specific variant exposed by the channel-bar Channel ⋮ menu."""
+    name = name.strip().lower()
+    if name not in room_settings.get("channels", []):
+        return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
+    import archive as _archive
+    import time as _time
+    try:
+        zip_bytes = _archive.build_channel_export(
+            store, name,
+            app_version=config.get("server", {}).get("version", ""),
+        )
+    except Exception as exc:
+        return JSONResponse({"error": f"export failed: {exc}"}, status_code=500)
+    filename = f"notolink-channel-{name}-{_time.strftime('%Y%m%d-%H%M%S')}.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # --- Jobs API ---
 
 @app.get("/api/schedules")
@@ -2217,10 +2376,18 @@ async def get_rules():
 
 
 @app.get("/api/rules/active")
-async def get_active_rules():
-    """Get compact active rules for agent injection."""
+async def get_active_rules(channel: str = ""):
+    """Get compact active rules for agent injection.
+
+    `channel` is optional. When provided, the refresh_interval comes from the
+    channel's resolved override (see get_channel_rules_refresh) instead of the
+    room default. The rules list itself isn't filtered here yet; that's wired
+    in a future change once the wrapper learns to poll per-channel."""
     data = rules.active_list()
-    data["refresh_interval"] = room_settings.get("rules_refresh_interval", 10)
+    if channel:
+        data["refresh_interval"] = get_channel_rules_refresh(channel)
+    else:
+        data["refresh_interval"] = max(0, int(room_settings.get("rules_refresh_interval", 10)))
     return JSONResponse(data)
 
 

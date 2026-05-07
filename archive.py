@@ -128,6 +128,52 @@ def build_export(store, jobs_store, rules_store, summary_store,
     return buf.getvalue()
 
 
+def build_channel_export(store, channel: str, app_version: str = "") -> bytes:
+    """Build a zip scoped to a single channel's chat messages.
+
+    Channel-only export: messages filtered to `channel`, no jobs/rules/
+    summaries (those would conflate cross-channel state). Manifest carries
+    `scope: "channel"` and the channel name so importers can route it.
+    """
+    buf = io.BytesIO()
+
+    all_messages = store.get_recent(count=999_999_999)
+    messages = [m for m in all_messages if (m.get("channel") or "").lower() == channel.lower()]
+
+    messages_lines = []
+    for msg in messages:
+        exported = dict(msg)
+        exported["uid"] = _ensure_uid(msg)
+        if "reply_to" in exported:
+            reply_id = exported["reply_to"]
+            for m in messages:
+                if m["id"] == reply_id:
+                    exported["reply_to_uid"] = _ensure_uid(m)
+                    break
+        messages_lines.append(json.dumps(exported, ensure_ascii=False))
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "archive_id": str(uuid.uuid4()),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "product": "notolink",
+        "app_version": app_version,
+        "scope": "channel",
+        "channel": channel,
+        "counts": {"messages": len(messages_lines)},
+        "attachments_included": False,
+    }
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        zf.writestr(
+            "messages.jsonl",
+            "\n".join(messages_lines) + "\n" if messages_lines else "",
+        )
+
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Import
 # ---------------------------------------------------------------------------

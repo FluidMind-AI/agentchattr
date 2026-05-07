@@ -1810,6 +1810,20 @@ function applySettings(data) {
             try { renderChannelSidebar(); } catch (_) {}
         }
     }
+    // Per-channel settings (loop guard, rules refresh) — server-side
+    // overrides for room defaults. Used by the channel-bar chips.
+    if (data.channel_settings && typeof data.channel_settings === 'object') {
+        window.channelSettings = data.channel_settings;
+    }
+    // App-wide defaults — the chips show these when the channel doesn't
+    // override. Mirror to window so renderChannelChips() can read them.
+    window.roomDefaults = {
+        max_agent_hops: data.max_agent_hops,
+        rules_refresh_interval: data.rules_refresh_interval,
+    };
+    if (typeof renderChannelChips === 'function') {
+        try { renderChannelChips(); } catch (_) {}
+    }
 }
 
 // Channel membership helpers consumed by the rendering filters below.
