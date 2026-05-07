@@ -365,6 +365,9 @@ function switchChannel(name) {
     if (typeof buildMentionToggles === 'function') {
         try { buildMentionToggles(); } catch (_) {}
     }
+    if (typeof renderChannelChips === 'function') {
+        try { renderChannelChips(); } catch (_) {}
+    }
     Store.set('activeChannel', name);
     // Restore: scroll to saved message, or bottom if none saved
     const savedId = _channelScrollMsg[name];
@@ -745,6 +748,214 @@ window.showChannelRenameDialog = showChannelRenameDialog;
 window.renderChannelSidebar = renderChannelSidebar;
 window.setChannelSidebarMode = setChannelSidebarMode;
 window.Channels = { init: _channelsInit };
+
+
+// ---------------------------------------------------------------------------
+// Channel-bar chips (loop guard, rules refresh, channel ⋮ menu)
+// ---------------------------------------------------------------------------
+//
+// Each chip mirrors a piece of channel-scoped state. The value shown is the
+// resolved override-or-default, with a visible "overridden" treatment when
+// the active channel has its own value set. Click → small popover anchored
+// to the chip with an inline editor + "Reset to default" link. PUT to
+// /api/channels/{name}/settings; the server broadcasts updated settings
+// over WebSocket and we re-render via applySettings.
+//
+// Source-of-truth state on window: `roomDefaults` (room-level defaults) and
+// `channelSettings` (per-channel overrides). Both are populated by
+// applySettings() in chat.js whenever a `settings` event arrives.
+
+const _CHIP_DEFS = {
+    loop_guard: {
+        key: 'max_agent_hops',
+        label: 'Loop',
+        defaultValue: 4,
+        format: v => String(v),
+        title: 'Loop guard: max agent-to-agent hops in this channel',
+    },
+    rules_refresh: {
+        key: 'rules_refresh_interval',
+        label: 'Rules',
+        defaultValue: 10,
+        format: v => v === 0 ? 'off' : `${v}s`,
+        title: 'Rules refresh interval (seconds) for this channel',
+    },
+};
+
+function _resolveChannelChipValue(channelName, defKey) {
+    const def = _CHIP_DEFS[defKey];
+    const override = (window.channelSettings && window.channelSettings[channelName] || {})[def.key];
+    if (override !== undefined && override !== null) {
+        return { value: override, overridden: true };
+    }
+    const roomDefault = (window.roomDefaults || {})[def.key];
+    if (roomDefault !== undefined && roomDefault !== null) {
+        return { value: roomDefault, overridden: false };
+    }
+    return { value: def.defaultValue, overridden: false };
+}
+
+function renderChannelChips() {
+    const host = document.getElementById('channel-bar-chips');
+    if (!host) return;
+    const channel = window.activeChannel || 'general';
+    host.innerHTML = '';
+
+    for (const defKey of ['loop_guard', 'rules_refresh']) {
+        const def = _CHIP_DEFS[defKey];
+        const { value, overridden } = _resolveChannelChipValue(channel, defKey);
+        const chip = document.createElement('button');
+        chip.className = 'ch-chip' + (overridden ? ' overridden' : '');
+        chip.id = `ch-chip-${defKey}`;
+        chip.title = def.title;
+        chip.innerHTML = `
+            <span class="ch-chip-label">${def.label}</span>
+            <span class="ch-chip-value">${def.format(value)}</span>
+        `;
+        chip.onclick = (e) => { e.stopPropagation(); _toggleChipPopover(chip, defKey, channel); };
+        host.appendChild(chip);
+    }
+
+    // Channel ⋮ menu: export this channel, clear chat
+    const menuChip = document.createElement('button');
+    menuChip.className = 'ch-chip ch-chip-menu';
+    menuChip.id = 'ch-chip-menu';
+    menuChip.title = 'Channel actions';
+    menuChip.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg>`;
+    menuChip.onclick = (e) => { e.stopPropagation(); _toggleChipPopover(menuChip, 'menu', channel); };
+    host.appendChild(menuChip);
+}
+
+let _openChipPopover = null;
+
+function _closeChipPopover() {
+    if (_openChipPopover) {
+        _openChipPopover.remove();
+        _openChipPopover = null;
+        document.removeEventListener('click', _onChipPopoverOutside, true);
+        document.removeEventListener('keydown', _onChipPopoverEsc);
+    }
+}
+
+function _onChipPopoverOutside(e) {
+    if (_openChipPopover && !_openChipPopover.contains(e.target)) {
+        _closeChipPopover();
+    }
+}
+
+function _onChipPopoverEsc(e) {
+    if (e.key === 'Escape') _closeChipPopover();
+}
+
+function _toggleChipPopover(anchor, kind, channel) {
+    if (_openChipPopover && _openChipPopover.dataset.kind === kind) {
+        _closeChipPopover();
+        return;
+    }
+    _closeChipPopover();
+    const pop = document.createElement('div');
+    pop.className = 'ch-chip-popover';
+    pop.dataset.kind = kind;
+
+    if (kind === 'loop_guard') {
+        const { value, overridden } = _resolveChannelChipValue(channel, 'loop_guard');
+        pop.innerHTML = `
+            <div class="ccp-title">Loop guard for #${channel}</div>
+            <div class="ccp-row">
+                <input type="number" min="1" max="50" value="${value}" class="ccp-input">
+                <button class="ccp-save">Set</button>
+            </div>
+            <div class="ccp-foot">
+                ${overridden
+                    ? `<a class="ccp-reset" href="#">Reset to default</a>`
+                    : `<span class="ccp-hint">Default from Settings → Defaults</span>`}
+            </div>
+        `;
+        const input = pop.querySelector('.ccp-input');
+        const save = pop.querySelector('.ccp-save');
+        const reset = pop.querySelector('.ccp-reset');
+        save.onclick = () => _putChannelSetting(channel, { max_agent_hops: parseInt(input.value, 10) || 4 });
+        if (reset) reset.onclick = (e) => { e.preventDefault(); _putChannelSetting(channel, { max_agent_hops: null }); };
+    } else if (kind === 'rules_refresh') {
+        const { value, overridden } = _resolveChannelChipValue(channel, 'rules_refresh');
+        const options = [0, 5, 10, 20, 50];
+        pop.innerHTML = `
+            <div class="ccp-title">Rules refresh for #${channel}</div>
+            <div class="ccp-row">
+                <select class="ccp-input">
+                    ${options.map(o => `<option value="${o}" ${o === value ? 'selected' : ''}>${o === 0 ? 'off' : o + 's'}</option>`).join('')}
+                </select>
+                <button class="ccp-save">Set</button>
+            </div>
+            <div class="ccp-foot">
+                ${overridden
+                    ? `<a class="ccp-reset" href="#">Reset to default</a>`
+                    : `<span class="ccp-hint">Default from Settings → Defaults</span>`}
+            </div>
+        `;
+        const select = pop.querySelector('.ccp-input');
+        const save = pop.querySelector('.ccp-save');
+        const reset = pop.querySelector('.ccp-reset');
+        save.onclick = () => _putChannelSetting(channel, { rules_refresh_interval: parseInt(select.value, 10) || 0 });
+        if (reset) reset.onclick = (e) => { e.preventDefault(); _putChannelSetting(channel, { rules_refresh_interval: null }); };
+    } else if (kind === 'menu') {
+        pop.classList.add('ch-chip-popover--menu');
+        pop.innerHTML = `
+            <button class="ccp-menu-item" data-action="export">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M4 6l4-5 4 5M2 12v3h12v-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Export this channel
+            </button>
+            <button class="ccp-menu-item" data-action="clear">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V3h4v1M5 4v8.5h6V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Clear chat
+            </button>
+        `;
+        pop.querySelector('[data-action="export"]').onclick = () => { _closeChipPopover(); _exportChannel(channel); };
+        pop.querySelector('[data-action="clear"]').onclick = () => { _closeChipPopover(); if (typeof window.clearChat === 'function') window.clearChat(); };
+    }
+
+    document.body.appendChild(pop);
+    const rect = anchor.getBoundingClientRect();
+    pop.style.position = 'fixed';
+    pop.style.top = (rect.bottom + 6) + 'px';
+    // Right-align under the anchor; clamp to viewport.
+    const popRect = pop.getBoundingClientRect();
+    let left = rect.right - popRect.width;
+    if (left < 8) left = 8;
+    if (left + popRect.width > window.innerWidth - 8) left = window.innerWidth - popRect.width - 8;
+    pop.style.left = left + 'px';
+    _openChipPopover = pop;
+    setTimeout(() => {
+        document.addEventListener('click', _onChipPopoverOutside, true);
+        document.addEventListener('keydown', _onChipPopoverEsc);
+    }, 0);
+}
+
+function _putChannelSetting(channel, body) {
+    const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+    fetch(`/api/channels/${encodeURIComponent(channel)}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Session-Token': tok },
+        body: JSON.stringify(body),
+    }).then(r => {
+        if (!r.ok) console.warn('channel settings PUT failed:', r.status);
+    }).finally(_closeChipPopover);
+    // Server broadcasts updated settings → applySettings → renderChannelChips,
+    // so we don't need to re-render here.
+}
+
+function _exportChannel(channel) {
+    const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+    const url = `/api/channels/${encodeURIComponent(channel)}/export?token=${encodeURIComponent(tok)}`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+window.renderChannelChips = renderChannelChips;
 
 
 // ---------------------------------------------------------------------------
