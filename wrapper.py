@@ -143,6 +143,9 @@ _BUILTIN_DEFAULTS: dict[str, dict] = {
         "mcp_flag": "--mcp-config",
         "mcp_transport": "http",
         "mcp_merge_project": True,  # include unity-mcp etc.
+        # Auto-accept file edits so unattended agents don't pause on every
+        # change. Shell commands still prompt — that's the safety floor.
+        "extra_args": ["--permission-mode", "acceptEdits"],
     },
     "gemini": {
         "mcp_inject": "env",
@@ -390,7 +393,11 @@ def _build_provider_launch(
         token=token, mcp_cfg=mcp_cfg, project_dir=project_dir,
     )
 
-    launch_args = [*mcp_args, *extra_args]
+    # Per-base extra args from _BUILTIN_DEFAULTS / agent_cfg (e.g. claude's
+    # --permission-mode acceptEdits) come BEFORE user-supplied extras so the
+    # user can still override at the CLI.
+    builtin_extra = list(agent_cfg.get("extra_args", []) or [])
+    launch_args = [*mcp_args, *builtin_extra, *extra_args]
     launch_env = dict(env)
 
     return launch_args, launch_env, inject_env, settings_path
@@ -614,6 +621,8 @@ def main():
     parser.add_argument("--mcp-sse-port",  default=None, help="Override mcp.sse_port (int)")
     parser.add_argument("--upload-dir",    default=None, help="Override images.upload_dir (path)")
     parser.add_argument("--cwd",           default=None, help="Override the inner agent's working directory (absolute path or relative to engine root)")
+    parser.add_argument("--initial-prompt", default=None, help="One-shot prompt sent to the inner agent ~5s after the tmux session boots (for SOP startup rituals: read CLAUDE.md, post 'online', etc.)")
+    parser.add_argument("--initial-prompt-delay", type=float, default=5.0, help="Seconds to wait after tmux session creation before injecting --initial-prompt (default 5)")
     args, extra = parser.parse_known_args()
 
     agent = args.agent
@@ -918,6 +927,8 @@ def main():
         pid_holder=_agent_pid,
         inject_env=inject_env,
         inject_delay=agent_cfg.get("inject_delay", 0.3),
+        initial_prompt=args.initial_prompt,
+        initial_prompt_delay=args.initial_prompt_delay,
     )
     # Windows-only injection tuning (no-op on other platforms).
     if sys.platform == "win32":
