@@ -81,6 +81,23 @@ class PermissionResolution(unittest.TestCase):
         }
         self.assertEqual(mcp_bridge._check_tool_permission("noto", "chat_send"), "allow")  # tier 1 default
 
+    def test_agent_defaults_applies_when_no_settings_override(self):
+        # AGENT_DEFAULTS["noto"]["tier_2"] = "allow" → noto can call
+        # tier-2 tools without any user config.
+        self.assertEqual(mcp_bridge._check_tool_permission("noto", "agent_press_approval"), "allow")
+        self.assertEqual(mcp_bridge._check_tool_permission("noto", "agent_relaunch"), "allow")
+        # Other agents still get the default deny.
+        self.assertEqual(mcp_bridge._check_tool_permission("funky", "agent_press_approval"), "deny")
+
+    def test_settings_override_beats_agent_defaults(self):
+        # User's settings.json beats the engine-shipped AGENT_DEFAULTS.
+        app_module.room_settings["tool_permissions"] = {
+            "noto": {"agent_press_approval": "deny"},
+        }
+        self.assertEqual(mcp_bridge._check_tool_permission("noto", "agent_press_approval"), "deny")
+        # noto still has the bucket-level default for OTHER tier-2 tools.
+        self.assertEqual(mcp_bridge._check_tool_permission("noto", "agent_relaunch"), "allow")
+
     def test_persist_per_tool_override(self):
         # Smoke test: writing an override saves to settings.
         with mock.patch.object(app_module, "_save_settings") as save:
