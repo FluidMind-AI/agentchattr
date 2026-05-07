@@ -1636,6 +1636,125 @@ async def get_settings():
     return room_settings
 
 
+# --- Tool permissions API ---
+#
+# Per-agent, per-tool permissions persisted under
+# room_settings["tool_permissions"]. Resolution order + tier model live in
+# mcp_bridge.py; see _check_tool_permission there. The UI (settings page +
+# per-agent permissions panel) consumes these endpoints.
+
+_VALID_DECISIONS_API = {"allow", "ask", "deny"}
+
+
+def _normalize_perm_value(value):
+    """Validate a permission value. Returns the value or raises ValueError."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in _VALID_DECISIONS_API:
+        raise ValueError(f"permission must be one of {sorted(_VALID_DECISIONS_API)} or null")
+    return value
+
+
+@app.get("/api/permissions")
+async def get_permissions():
+    """Return the full tool_permissions structure (defaults + per-agent
+    overrides) plus the static tier table so the UI can group tools."""
+    import mcp_bridge
+    return JSONResponse({
+        "permissions": room_settings.get("tool_permissions", {}),
+        "tool_tiers": mcp_bridge.TOOL_TIERS,
+        "default_tier_policy": mcp_bridge.DEFAULT_TIER_POLICY,
+    })
+
+
+@app.put("/api/permissions/_defaults")
+async def put_permissions_defaults(request: Request):
+    """Update the _defaults tier policy block. Body: {tier_0/1/2/3: 'allow|ask|deny'}.
+    Pass null to clear a key (it falls back to the hardcoded default)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be an object"}, status_code=400)
+    perms = room_settings.setdefault("tool_permissions", {})
+    defaults = perms.setdefault("_defaults", {})
+    valid_keys = {f"tier_{i}" for i in range(4)}
+    for key, value in body.items():
+        if key not in valid_keys:
+            return JSONResponse({"error": f"unsupported key: {key}"}, status_code=400)
+        try:
+            v = _normalize_perm_value(value)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if v is None:
+            defaults.pop(key, None)
+        else:
+            defaults[key] = v
+    if not defaults:
+        perms.pop("_defaults", None)
+    if not perms:
+        room_settings.pop("tool_permissions", None)
+    _save_settings()
+    await broadcast_settings()
+    return JSONResponse({"defaults": room_settings.get("tool_permissions", {}).get("_defaults", {})})
+
+
+@app.put("/api/permissions/{agent}")
+async def put_permissions_agent(agent: str, request: Request):
+    """Set per-agent overrides. Body: {overrides: {<tool_or_tier_key>: 'allow|ask|deny'|null}}.
+    Null clears that override (the agent falls back to defaults). The
+    special agent name '_defaults' is reserved for the global defaults
+    endpoint above."""
+    agent = (agent or "").strip()
+    if not agent or agent == "_defaults":
+        return JSONResponse({"error": "invalid agent name"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    overrides = body.get("overrides") if isinstance(body, dict) else None
+    if not isinstance(overrides, dict):
+        return JSONResponse({"error": "body must contain an 'overrides' object"}, status_code=400)
+    perms = room_settings.setdefault("tool_permissions", {})
+    agent_perms = perms.setdefault(agent, {})
+    for key, value in overrides.items():
+        try:
+            v = _normalize_perm_value(value)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if v is None:
+            agent_perms.pop(key, None)
+        else:
+            agent_perms[key] = v
+    if not agent_perms:
+        perms.pop(agent, None)
+    if not perms:
+        room_settings.pop("tool_permissions", None)
+    _save_settings()
+    await broadcast_settings()
+    return JSONResponse({
+        "agent": agent,
+        "overrides": room_settings.get("tool_permissions", {}).get(agent, {}),
+    })
+
+
+@app.delete("/api/permissions/{agent}")
+async def delete_permissions_agent(agent: str):
+    """Clear all overrides for an agent (revert to defaults)."""
+    agent = (agent or "").strip()
+    if not agent or agent == "_defaults":
+        return JSONResponse({"error": "invalid agent name"}, status_code=400)
+    perms = room_settings.get("tool_permissions", {})
+    if agent in perms:
+        perms.pop(agent, None)
+        if not perms:
+            room_settings.pop("tool_permissions", None)
+        _save_settings()
+        await broadcast_settings()
+    return JSONResponse({"agent": agent, "overrides": {}})
+
+
 # --- Channel API ---
 #
 # Channels are also creatable via WebSocket events for the in-app UI; the
@@ -1896,13 +2015,25 @@ async def resolve_decision(msg_id: int, request: Request):
                     store._rewrite()
     if error:
         return JSONResponse({"error": error[0]}, status_code=error[1])
-    # Post the chosen answer as a regular chat message tagged @sender
-    username = room_settings.get("username", "user")
-    reply_text = f"@{sender} {chosen}" if sender else chosen
+    # Permissions hook: if this decision card was an approval-card waiting
+    # on a Tier-2/Tier-3 tool call, unblock the calling MCP worker thread
+    # by setting the matching Future's result. Done BEFORE posting the
+    # reply so the tool resumes promptly.
+    is_approval = False
     try:
-        store.add(username, reply_text, reply_to=msg_id, channel=channel)
+        import mcp_bridge
+        is_approval = mcp_bridge.resolve_pending_approval(msg_id, chosen)
     except Exception:
         import traceback; traceback.print_exc()
+    # Post the chosen answer as a regular chat message tagged @sender,
+    # except for approval cards — those don't need a redundant reply.
+    if not is_approval:
+        username = room_settings.get("username", "user")
+        reply_text = f"@{sender} {chosen}" if sender else chosen
+        try:
+            store.add(username, reply_text, reply_to=msg_id, channel=channel)
+        except Exception:
+            import traceback; traceback.print_exc()
     # Broadcast updated decision card so the UI swaps buttons to resolved state
     updated = store.get_by_id(msg_id)
     if updated:
