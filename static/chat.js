@@ -1387,6 +1387,16 @@ function showPillPopover(pillEl, opts) {
                 </select>
             </div>`;
         })() : ''}
+        ${opts.mode !== 'pending' ? `
+            <div class="pill-popover-section">
+                <button class="pill-popover-permissions-btn" data-agent="${escapeHtml(opts.name)}">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M8 1.5L2.5 4v4c0 3.5 2.4 6 5.5 7 3.1-1 5.5-3.5 5.5-7V4L8 1.5z" stroke="currentColor" stroke-width="1.3" fill="none"/>
+                    </svg>
+                    Permissions for ${escapeHtml(opts.label || opts.name)}
+                </button>
+            </div>
+        ` : ''}
     `;
 
     const inputEl = popover.querySelector('.pill-popover-input');
@@ -1536,6 +1546,19 @@ function showPillPopover(pillEl, opts) {
                 soundCache[val].currentTime = 0;
                 soundCache[val].play().catch(() => {});
             }
+        });
+    }
+
+    // Permissions button: opens the per-agent permissions panel anchored
+    // to the same pill (settings-page.js owns the panel implementation).
+    const permsBtn = popover.querySelector('.pill-popover-permissions-btn');
+    if (permsBtn) {
+        permsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (typeof window.openAgentPermissionsPanel === 'function') {
+                window.openAgentPermissionsPanel(opts.name, pillEl);
+            }
+            closePopover();
         });
     }
 

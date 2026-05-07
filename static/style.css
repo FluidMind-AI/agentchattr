@@ -637,6 +637,216 @@ header h1 {
     border-color: rgba(0, 188, 255, 0.5);
 }
 
+/* --- Permissions UI ---------------------------------------------------- */
+/* Defaults tab: tier rows + decision pills. Three-state Allow/Ask/Deny. */
+.np-perms-tier {
+    margin-bottom: 16px;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.02);
+}
+.np-perms-tier-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.np-perms-tier-label {
+    font-family: 'Bricolage Grotesque', 'Manrope', sans-serif;
+    font-weight: 600;
+    color: var(--text, #e8e8f0);
+    font-size: 14px;
+}
+.np-perms-tier-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.np-perms-tier-hint {
+    font-size: 11px;
+    color: var(--text-dim, #aab);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.np-perms-decisions {
+    display: inline-flex;
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 10px;
+    padding: 3px;
+}
+.np-perms-pill {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim, #aab);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    text-transform: capitalize;
+}
+.np-perms-pill:hover {
+    color: var(--text, #e8e8f0);
+}
+.np-perms-allow.active {
+    background: rgba(34, 197, 94, 0.15);
+    color: hsl(142 70% 70%);
+    border-color: rgba(34, 197, 94, 0.4);
+}
+.np-perms-ask.active {
+    background: rgba(245, 158, 11, 0.15);
+    color: hsl(42 90% 70%);
+    border-color: rgba(245, 158, 11, 0.4);
+}
+.np-perms-deny.active {
+    background: rgba(239, 68, 68, 0.15);
+    color: hsl(0 90% 75%);
+    border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Per-agent permissions panel (opened from the pill popover). */
+.np-agent-perms-panel {
+    z-index: 1600;
+    border-radius: 14px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: var(--text, #e8e8f0);
+    animation: agentPermsIn 0.15s ease-out;
+}
+@keyframes agentPermsIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.np-agent-perms-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-family: 'Bricolage Grotesque', 'Manrope', sans-serif;
+}
+.np-agent-perms-close {
+    background: transparent;
+    border: 0;
+    color: var(--text-dim, #aab);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+.np-agent-perms-close:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text, #e8e8f0);
+}
+.np-agent-perms-body {
+    padding: 12px;
+    overflow-y: auto;
+    flex: 1;
+}
+.np-agent-perms-tier {
+    margin-bottom: 12px;
+}
+.np-agent-perms-tier-label {
+    font-size: 11px;
+    color: var(--text-dim, #aab);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+    padding-left: 4px;
+}
+.np-agent-perms-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    margin-bottom: 4px;
+    transition: background 0.15s, border-color 0.15s;
+}
+.np-agent-perms-row.overridden {
+    background: rgba(0, 188, 255, 0.06);
+    border-color: rgba(0, 188, 255, 0.3);
+}
+.np-agent-perms-tool {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.np-agent-perms-tool-name {
+    font-family: 'JetBrains Mono', 'Menlo', monospace;
+    font-size: 12px;
+    color: var(--text, #e8e8f0);
+}
+.np-agent-perms-default-badge {
+    font-size: 10px;
+    color: var(--text-dim, #aab);
+    text-transform: capitalize;
+}
+.np-agent-perms-decisions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+.np-agent-perms-clear {
+    background: transparent;
+    border: 0;
+    color: var(--text-dim, #aab);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 4px;
+}
+.np-agent-perms-clear:hover {
+    color: hsl(196 100% 70%);
+    background: rgba(0, 188, 255, 0.08);
+}
+.np-agent-perms-foot {
+    padding: 10px 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    text-align: right;
+}
+.np-agent-perms-reset {
+    color: hsl(196 100% 70%);
+    font-size: 12px;
+    text-decoration: none;
+}
+.np-agent-perms-reset:hover { text-decoration: underline; }
+
+/* Pill popover Permissions button row */
+.pill-popover-permissions-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: rgba(0, 188, 255, 0.06);
+    border: 1px solid rgba(0, 188, 255, 0.25);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: hsl(196 100% 75%);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.pill-popover-permissions-btn:hover {
+    background: rgba(0, 188, 255, 0.12);
+    border-color: rgba(0, 188, 255, 0.5);
+}
+
 /* --- Toast notifications --- */
 .toast {
     position: fixed;

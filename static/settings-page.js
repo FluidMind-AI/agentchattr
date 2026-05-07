@@ -206,19 +206,257 @@ function _wireDefaults() {
     });
 }
 
+// --- Permissions: defaults tab ---
+//
+// Per-agent overrides do NOT live here — they live on each agent (open the
+// pill popover, click Permissions). This tab is the global "what's the
+// policy for everyone unless an agent overrides" surface.
+
+const _PERMS_DECISIONS = ['allow', 'ask', 'deny'];
+const _TIER_LABELS = {
+    0: 'Tier 0 — Read-only',
+    1: 'Tier 1 — Self-state',
+    2: 'Tier 2 — Other-agent',
+    3: 'Tier 3 — Environment',
+};
+
+async function _fetchPerms() {
+    try {
+        const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+        const r = await fetch('/api/permissions', { headers: { 'X-Session-Token': tok } });
+        if (!r.ok) return null;
+        return await r.json();
+    } catch (_) { return null; }
+}
+
+function _groupToolsByTier(toolTiers) {
+    const groups = { 0: [], 1: [], 2: [], 3: [] };
+    for (const [tool, tier] of Object.entries(toolTiers || {})) {
+        const t = Math.max(0, Math.min(3, tier | 0));
+        groups[t].push(tool);
+    }
+    for (const k of Object.keys(groups)) groups[k].sort();
+    return groups;
+}
+
+function _resolveDefault(tier, perms) {
+    const defaults = (perms || {})._defaults || {};
+    const v = defaults[`tier_${tier}`];
+    if (_PERMS_DECISIONS.includes(v)) return v;
+    return ['allow', 'allow', 'deny', 'ask'][tier];
+}
+
+function _renderDecisionGroup(scope, key, current) {
+    return `
+        <span class="np-perms-decisions" data-scope="${scope}" data-key="${key}">
+            ${_PERMS_DECISIONS.map(d => `
+                <button type="button" class="np-perms-pill np-perms-${d} ${current === d ? 'active' : ''}" data-decision="${d}">${d}</button>
+            `).join('')}
+        </span>
+    `;
+}
+
+function _renderPermsDefaultsBlock(perms, toolTiers) {
+    const groups = _groupToolsByTier(toolTiers);
+    let html = '';
+    for (const tier of [0, 1, 2, 3]) {
+        const tools = groups[tier];
+        if (!tools.length) continue;
+        const tierKey = `tier_${tier}`;
+        const tierVal = ((perms._defaults || {})[tierKey]) || _resolveDefault(tier, perms);
+        html += `
+            <div class="np-perms-tier">
+                <div class="np-perms-tier-header">
+                    <span class="np-perms-tier-label">${_TIER_LABELS[tier]}</span>
+                    <span class="np-perms-tier-row">
+                        <span class="np-perms-tier-hint">Bucket default</span>
+                        ${_renderDecisionGroup('tier', tierKey, tierVal)}
+                    </span>
+                </div>
+            </div>
+        `;
+    }
+    return html;
+}
+
 function _renderPermissions() {
     return `
         <div class="np-card">
             <h3 class="np-card-title">Defaults</h3>
-            <p class="np-hint">Allow / Ask / Deny per tool, applied to every agent unless they have a specific override. Per-agent overrides live on each agent — click their name pill in the header.</p>
-            <p class="np-placeholder">Permissions UI coming in the next release.</p>
+            <p class="np-hint">These apply to every agent unless that agent has a specific override. Per-agent overrides live on each agent — click their name pill in the header.</p>
+            <div id="np-perms-defaults"><p class="np-placeholder">Loading…</p></div>
         </div>
     `;
 }
 
-function _wirePermissions() {
-    // P4 will populate.
+async function _wirePermissions() {
+    const host = document.getElementById('np-perms-defaults');
+    if (!host) return;
+    const data = await _fetchPerms();
+    if (!data) {
+        host.innerHTML = '<p class="np-placeholder">Could not load permissions.</p>';
+        return;
+    }
+    host.innerHTML = _renderPermsDefaultsBlock(data.permissions, data.tool_tiers);
+    host.addEventListener('click', _onPermsDefaultsClick);
 }
+
+async function _putDefaults(body) {
+    try {
+        const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+        await fetch('/api/permissions/_defaults', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': tok },
+            body: JSON.stringify(body),
+        });
+    } catch (e) { console.warn('PUT defaults failed', e); }
+}
+
+function _onPermsDefaultsClick(e) {
+    const btn = e.target.closest('.np-perms-pill');
+    if (!btn) return;
+    const group = btn.closest('.np-perms-decisions');
+    if (!group) return;
+    const key = group.dataset.key;
+    const decision = btn.dataset.decision;
+    group.querySelectorAll('.np-perms-pill').forEach(b => b.classList.toggle('active', b === btn));
+    _putDefaults({ [key]: decision });
+}
+
+// --- Per-agent permissions panel (opened from the pill popover) ---
+
+async function _putAgentOverride(agent, overrides) {
+    try {
+        const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+        await fetch(`/api/permissions/${encodeURIComponent(agent)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': tok },
+            body: JSON.stringify({ overrides }),
+        });
+    } catch (e) { console.warn('PUT agent override failed', e); }
+}
+
+async function _deleteAgentPerms(agent) {
+    try {
+        const tok = window.SESSION_TOKEN || window.__SESSION_TOKEN__ || '';
+        await fetch(`/api/permissions/${encodeURIComponent(agent)}`, {
+            method: 'DELETE',
+            headers: { 'X-Session-Token': tok },
+        });
+    } catch (e) { console.warn('DELETE agent perms failed', e); }
+}
+
+async function _populateAgentPanel(panel, agent) {
+    const body = panel.querySelector('.np-agent-perms-body');
+    body.innerHTML = '<p class="np-placeholder">Loading…</p>';
+    const data = await _fetchPerms();
+    if (!data) {
+        body.innerHTML = '<p class="np-placeholder">Could not load permissions.</p>';
+        return;
+    }
+    const groups = _groupToolsByTier(data.tool_tiers);
+    const overrides = (data.permissions[agent] || {});
+    let html = '';
+    for (const tier of [0, 1, 2, 3]) {
+        const tools = groups[tier];
+        if (!tools.length) continue;
+        html += `<div class="np-agent-perms-tier"><div class="np-agent-perms-tier-label">${_TIER_LABELS[tier]}</div>`;
+        for (const tool of tools) {
+            const def = ((data.permissions._defaults || {})[`tier_${tier}`]) || _resolveDefault(tier, data.permissions);
+            const overrideVal = overrides[tool];
+            const overridden = _PERMS_DECISIONS.includes(overrideVal);
+            const effective = overridden ? overrideVal : def;
+            html += `
+                <div class="np-agent-perms-row ${overridden ? 'overridden' : ''}" data-tool="${tool}">
+                    <div class="np-agent-perms-tool">
+                        <span class="np-agent-perms-tool-name">${tool}</span>
+                        <span class="np-agent-perms-default-badge">Default: ${def}</span>
+                    </div>
+                    <div class="np-agent-perms-decisions">
+                        ${_PERMS_DECISIONS.map(d => `
+                            <button class="np-perms-pill np-perms-${d} ${effective === d && overridden ? 'active' : ''}" data-decision="${d}">${d}</button>
+                        `).join('')}
+                        ${overridden ? `<button class="np-agent-perms-clear" title="Clear override">↺</button>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+    }
+    body.innerHTML = html;
+    body.onclick = (e) => _onAgentPermsClick(e, panel, agent);
+}
+
+function _onAgentPermsClick(e, panel, agent) {
+    const row = e.target.closest('.np-agent-perms-row');
+    if (!row) return;
+    const tool = row.dataset.tool;
+    if (e.target.classList.contains('np-agent-perms-clear')) {
+        _putAgentOverride(agent, { [tool]: null }).then(() => _populateAgentPanel(panel, agent));
+        return;
+    }
+    const btn = e.target.closest('.np-perms-pill');
+    if (!btn) return;
+    _putAgentOverride(agent, { [tool]: btn.dataset.decision }).then(() => _populateAgentPanel(panel, agent));
+}
+
+function openAgentPermissionsPanel(agentName, anchorEl) {
+    document.querySelectorAll('.np-agent-perms-panel').forEach(p => p.remove());
+
+    const panel = document.createElement('div');
+    panel.className = 'np-agent-perms-panel np-glass-strong';
+    panel.dataset.agent = agentName;
+    panel.innerHTML = `
+        <div class="np-agent-perms-header">
+            <strong>Permissions for ${_esc(agentName)}</strong>
+            <button class="np-agent-perms-close" aria-label="Close">×</button>
+        </div>
+        <div class="np-agent-perms-body"><p class="np-placeholder">Loading…</p></div>
+        <div class="np-agent-perms-foot">
+            <a href="#" class="np-agent-perms-reset">Reset all overrides</a>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    if (anchorEl) {
+        const rect = anchorEl.getBoundingClientRect();
+        const w = 360;
+        let left = rect.left;
+        if (left + w > window.innerWidth - 12) left = window.innerWidth - w - 12;
+        if (left < 12) left = 12;
+        panel.style.position = 'fixed';
+        panel.style.top = `${rect.bottom + 8}px`;
+        panel.style.left = `${left}px`;
+        panel.style.width = `${w}px`;
+    } else {
+        panel.style.position = 'fixed';
+        panel.style.top = '50%';
+        panel.style.left = '50%';
+        panel.style.transform = 'translate(-50%, -50%)';
+        panel.style.width = '360px';
+    }
+
+    panel.querySelector('.np-agent-perms-close').addEventListener('click', () => panel.remove());
+    panel.querySelector('.np-agent-perms-reset').addEventListener('click', async (e) => {
+        e.preventDefault();
+        await _deleteAgentPerms(agentName);
+        await _populateAgentPanel(panel, agentName);
+    });
+
+    setTimeout(() => {
+        const handler = (ev) => {
+            if (!panel.contains(ev.target)) {
+                panel.remove();
+                document.removeEventListener('click', handler, true);
+            }
+        };
+        document.addEventListener('click', handler, true);
+    }, 0);
+
+    _populateAgentPanel(panel, agentName);
+}
+
+window.openAgentPermissionsPanel = openAgentPermissionsPanel;
 
 function _renderHistory() {
     return `
