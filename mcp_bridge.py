@@ -5,6 +5,7 @@ Serves two transports for compatibility:
   - SSE on port 8201 (Gemini)
 """
 
+import concurrent.futures
 import json
 import os
 import time
@@ -153,6 +154,241 @@ def _authenticated_instance(ctx: Context | None) -> dict | None:
     if not token:
         return None
     return registry.resolve_token(token)
+
+
+# ---------------------------------------------------------------------------
+# Per-agent, per-tool permissions
+# ---------------------------------------------------------------------------
+#
+# Tier model (per the security plan):
+#   0 = read-only        -> default allow
+#   1 = self-state       -> default allow (caller can only act AS itself)
+#   2 = other-agent      -> default deny  (gated; Noto-only by config)
+#   3 = environment      -> default ask   (always asks the user)
+#
+# Permission resolution order for (agent, tool):
+#   1. agent's per-tool override
+#   2. agent's tier-bucket override
+#   3. _defaults tier-bucket (from settings.json)
+#   4. hardcoded fallback (DEFAULT_TIER_POLICY below)
+#
+# Persisted in app.room_settings["tool_permissions"]:
+#   {
+#     "_defaults": {"tier_0":"allow","tier_1":"allow","tier_2":"deny","tier_3":"ask"},
+#     "<agent>":   {"<tool>":"allow|ask|deny", "tier_X":"allow|ask|deny"}
+#   }
+
+TOOL_TIERS: dict[str, int] = {
+    # Tier 0 — read-only
+    "chat_read": 0, "chat_who": 0, "chat_channels": 0, "chat_resync": 0,
+    "chat_summary_read": 0, "chat_rules_list": 0,
+    # Tier 1 — self-state (caller posts/acts AS itself)
+    "chat_send": 1, "chat_join": 1, "chat_propose_job": 1,
+    "chat_summary_write": 1, "chat_rules_propose": 1, "chat_decision": 1,
+    "chat_claim": 1, "chat_set_hat_self": 1,
+    # Tier 2 — affects another agent
+    "chat_set_hat_other": 2,
+    # Future: agent_press_approval, agent_relaunch (added in P5)
+}
+
+DEFAULT_TIER_POLICY: dict[int, str] = {
+    0: "allow", 1: "allow", 2: "deny", 3: "ask",
+}
+
+_VALID_DECISIONS = {"allow", "ask", "deny"}
+
+# concurrent.futures.Future per pending approval msg_id. The MCP tool runs
+# on a FastMCP worker thread; the tool blocks on .result() while the user
+# clicks the in-chat approval card. resolve_decision (sync hook from app.py)
+# sets the future's result, unblocking the worker.
+_pending_approvals: dict[int, concurrent.futures.Future] = {}
+_approvals_lock = threading.Lock()
+
+
+def _read_tool_perms() -> dict:
+    """Read tool_permissions from room_settings. Returns {} when absent."""
+    try:
+        import app as _app
+        perms = _app.room_settings.get("tool_permissions")
+    except Exception:
+        return {}
+    return perms if isinstance(perms, dict) else {}
+
+
+def _check_tool_permission(agent: str, tool: str) -> str:
+    """Resolve permission for (agent, tool) → 'allow' | 'ask' | 'deny'.
+
+    See module-level comment for resolution order. Unknown tools default to
+    tier 1 (self-state) — same gating as posting your own messages.
+    """
+    if not agent or not tool:
+        return "deny"
+    tier = TOOL_TIERS.get(tool, 1)
+    perms = _read_tool_perms()
+    agent_perms = perms.get(agent, {}) if isinstance(perms.get(agent), dict) else {}
+    tier_key = f"tier_{tier}"
+
+    # 1. agent per-tool
+    v = agent_perms.get(tool)
+    if v in _VALID_DECISIONS:
+        return v
+    # 2. agent tier bucket
+    v = agent_perms.get(tier_key)
+    if v in _VALID_DECISIONS:
+        return v
+    # 3. _defaults tier bucket
+    defaults = perms.get("_defaults") or {}
+    v = defaults.get(tier_key) if isinstance(defaults, dict) else None
+    if v in _VALID_DECISIONS:
+        return v
+    # 4. hardcoded fallback
+    return DEFAULT_TIER_POLICY.get(tier, "deny")
+
+
+def _persist_per_tool_override(agent: str, tool: str, decision: str) -> None:
+    """Write a per-(agent, tool) override into settings.json. Called when the
+    user picks "Always allow" on an approval card."""
+    if decision not in _VALID_DECISIONS:
+        return
+    try:
+        import app as _app
+        perms = _app.room_settings.setdefault("tool_permissions", {})
+        agent_perms = perms.setdefault(agent, {})
+        agent_perms[tool] = decision
+        _app._save_settings()
+    except Exception as exc:
+        log.warning("failed to persist tool override %s/%s=%s: %s",
+                    agent, tool, decision, exc)
+
+
+def _audit_tool_call(agent: str, tool: str, decision: str,
+                     args_summary: str = "", approval_msg_id: int | None = None) -> None:
+    """Append a tool_call entry to data/tool_calls.jsonl. Skipped for tier-0
+    'allow' calls to keep the log tractable (read-only happy path is high-
+    frequency and uninteresting for audit)."""
+    tier = TOOL_TIERS.get(tool, 1)
+    if tier == 0 and decision == "allow":
+        return
+    try:
+        import app as _app
+        data_dir = _app.config.get("server", {}).get("data_dir", "./data") if _app.config else "./data"
+        log_path = Path(data_dir) / "tool_calls.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "tool_call",
+            "agent": agent,
+            "tool": tool,
+            "tier": tier,
+            "decision": decision,
+            "args": args_summary,
+            "timestamp": time.time(),
+        }
+        if approval_msg_id is not None:
+            record["approval_msg_id"] = approval_msg_id
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        log.warning("failed to write tool_call audit entry: %s", exc)
+
+
+def _request_approval(agent: str, tool: str, args_summary: str,
+                      channel: str = "general", timeout: float = 300.0) -> str:
+    """Post an approval card in chat and block (this thread) until the user
+    clicks Allow / Deny / Always allow. Returns the chosen string, or
+    'timeout' if no answer within `timeout` seconds.
+
+    Sync function — safe to call from FastMCP worker threads. The future is
+    resolved by app.py's resolve_decision endpoint when the user clicks.
+    """
+    if store is None:
+        return "deny"  # can't post the card, fail safe
+    sender = "noto"  # chief-of-staff posts approvals; falls back to system if absent
+    if registry and not registry.is_registered("noto"):
+        sender = "system"
+    text = f"@{agent} wants to use **{tool}**"
+    if args_summary:
+        text += f" ({args_summary})"
+    text += " — approve?"
+    msg = store.add(
+        sender=sender,
+        text=text,
+        msg_type="decision",
+        channel=channel,
+        metadata={
+            "choices": ["Allow", "Deny", "Always allow"],
+            "resolved": False,
+            "is_approval": True,
+            "approval_for": {"agent": agent, "tool": tool},
+        },
+    )
+    if not msg or "id" not in msg:
+        return "deny"
+    msg_id = msg["id"]
+    fut: concurrent.futures.Future = concurrent.futures.Future()
+    with _approvals_lock:
+        _pending_approvals[msg_id] = fut
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return "timeout"
+    except Exception:
+        return "deny"
+    finally:
+        with _approvals_lock:
+            _pending_approvals.pop(msg_id, None)
+
+
+def resolve_pending_approval(msg_id: int, chosen: str) -> bool:
+    """Called from app.resolve_decision when the user clicks an approval
+    card. Sets the matching Future's result. Returns True if a pending
+    approval was matched (so the caller knows it was an approval card)."""
+    with _approvals_lock:
+        fut = _pending_approvals.get(msg_id)
+    if fut is None or fut.done():
+        return False
+    try:
+        fut.set_result(chosen)
+        return True
+    except Exception:
+        return False
+
+
+def authorize_tool(agent: str, tool: str, *, args_summary: str = "",
+                   channel: str = "general") -> tuple[bool, str | None]:
+    """Identity-resolved tools call this AFTER they have a canonical agent
+    name. Returns (allowed, error_message_or_None). On 'ask', blocks until
+    the user answers via the in-chat approval card.
+
+    Existing tier-0/1 tools call this right after _resolve_tool_identity
+    succeeds. Default policy keeps tier-0/1 = allow, so behavior is
+    unchanged for legacy setups (no tool_permissions in settings.json).
+    """
+    if not agent or not tool:
+        return False, "Error: missing agent or tool for authorization."
+    decision = _check_tool_permission(agent, tool)
+    if decision == "allow":
+        _audit_tool_call(agent, tool, "allow", args_summary)
+        return True, None
+    if decision == "deny":
+        _audit_tool_call(agent, tool, "deny", args_summary)
+        return False, f"Error: '{tool}' is not permitted for {agent}."
+    if decision == "ask":
+        # Block this worker thread until the user answers.
+        # store.add of the approval card needs the msg id back; the tool
+        # already had a chance to set channel context via the call site.
+        choice = _request_approval(agent, tool, args_summary, channel=channel)
+        if choice in ("Allow", "Always allow"):
+            if choice == "Always allow":
+                _persist_per_tool_override(agent, tool, "allow")
+            _audit_tool_call(agent, tool, "allow_after_ask", args_summary)
+            return True, None
+        if choice == "Deny":
+            _audit_tool_call(agent, tool, "deny_after_ask", args_summary)
+            return False, f"Error: '{tool}' was denied by the user."
+        # timeout / unknown
+        _audit_tool_call(agent, tool, choice, args_summary)
+        return False, f"Error: '{tool}' approval timed out."
+    return False, f"Error: '{tool}' permission unresolved."
 
 
 def _resolve_tool_identity(
