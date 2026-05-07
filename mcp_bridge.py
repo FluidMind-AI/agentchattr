@@ -5,6 +5,7 @@ Serves two transports for compatibility:
   - SSE on port 8201 (Gemini)
 """
 
+import concurrent.futures
 import json
 import os
 import time
@@ -153,6 +154,259 @@ def _authenticated_instance(ctx: Context | None) -> dict | None:
     if not token:
         return None
     return registry.resolve_token(token)
+
+
+# ---------------------------------------------------------------------------
+# Per-agent, per-tool permissions
+# ---------------------------------------------------------------------------
+#
+# Tier model (per the security plan):
+#   0 = read-only        -> default allow
+#   1 = self-state       -> default allow (caller can only act AS itself)
+#   2 = other-agent      -> default deny  (gated; Noto-only by config)
+#   3 = environment      -> default ask   (always asks the user)
+#
+# Permission resolution order for (agent, tool):
+#   1. agent's per-tool override
+#   2. agent's tier-bucket override
+#   3. _defaults tier-bucket (from settings.json)
+#   4. hardcoded fallback (DEFAULT_TIER_POLICY below)
+#
+# Persisted in app.room_settings["tool_permissions"]:
+#   {
+#     "_defaults": {"tier_0":"allow","tier_1":"allow","tier_2":"deny","tier_3":"ask"},
+#     "<agent>":   {"<tool>":"allow|ask|deny", "tier_X":"allow|ask|deny"}
+#   }
+
+TOOL_TIERS: dict[str, int] = {
+    # Tier 0 — read-only
+    "chat_read": 0, "chat_who": 0, "chat_channels": 0, "chat_resync": 0,
+    "chat_summary_read": 0, "chat_rules_list": 0,
+    # Tier 1 — self-state (caller posts/acts AS itself)
+    "chat_send": 1, "chat_join": 1, "chat_propose_job": 1,
+    "chat_summary_write": 1, "chat_rules_propose": 1, "chat_decision": 1,
+    "chat_claim": 1, "chat_set_hat_self": 1,
+    # Tier 2 — affects another agent
+    "chat_set_hat_other": 2,
+    "agent_press_approval": 2, "agent_relaunch": 2,
+}
+
+DEFAULT_TIER_POLICY: dict[int, str] = {
+    0: "allow", 1: "allow", 2: "deny", 3: "ask",
+}
+
+# Engine-shipped per-agent defaults. Apply ABOVE the hardcoded fallback
+# but BELOW the user's settings.json overrides — so the user can change
+# these from Settings → Permissions panel without code edits.
+#
+# Noto is the chief-of-staff seat; ships with full Tier-2 access by default.
+AGENT_DEFAULTS: dict[str, dict[str, str]] = {
+    "noto": {"tier_2": "allow"},
+}
+
+_VALID_DECISIONS = {"allow", "ask", "deny"}
+
+# concurrent.futures.Future per pending approval msg_id. The MCP tool runs
+# on a FastMCP worker thread; the tool blocks on .result() while the user
+# clicks the in-chat approval card. resolve_decision (sync hook from app.py)
+# sets the future's result, unblocking the worker.
+_pending_approvals: dict[int, concurrent.futures.Future] = {}
+_approvals_lock = threading.Lock()
+
+
+def _read_tool_perms() -> dict:
+    """Read tool_permissions from room_settings. Returns {} when absent."""
+    try:
+        import app as _app
+        perms = _app.room_settings.get("tool_permissions")
+    except Exception:
+        return {}
+    return perms if isinstance(perms, dict) else {}
+
+
+def _check_tool_permission(agent: str, tool: str) -> str:
+    """Resolve permission for (agent, tool) → 'allow' | 'ask' | 'deny'.
+
+    See module-level comment for resolution order. Unknown tools default to
+    tier 1 (self-state) — same gating as posting your own messages.
+    """
+    if not agent or not tool:
+        return "deny"
+    tier = TOOL_TIERS.get(tool, 1)
+    perms = _read_tool_perms()
+    agent_perms = perms.get(agent, {}) if isinstance(perms.get(agent), dict) else {}
+    tier_key = f"tier_{tier}"
+
+    # 1. agent per-tool (settings.json)
+    v = agent_perms.get(tool)
+    if v in _VALID_DECISIONS:
+        return v
+    # 2. agent tier bucket (settings.json)
+    v = agent_perms.get(tier_key)
+    if v in _VALID_DECISIONS:
+        return v
+    # 3. _defaults tier bucket (settings.json)
+    defaults = perms.get("_defaults") or {}
+    v = defaults.get(tier_key) if isinstance(defaults, dict) else None
+    if v in _VALID_DECISIONS:
+        return v
+    # 4. AGENT_DEFAULTS (engine-shipped per-agent defaults; user can
+    #    override via settings.json above). Noto's tier_2 = allow lives here.
+    eng_agent = AGENT_DEFAULTS.get(agent, {})
+    v = eng_agent.get(tool)
+    if v in _VALID_DECISIONS:
+        return v
+    v = eng_agent.get(tier_key)
+    if v in _VALID_DECISIONS:
+        return v
+    # 5. hardcoded tier-policy fallback
+    return DEFAULT_TIER_POLICY.get(tier, "deny")
+
+
+def _persist_per_tool_override(agent: str, tool: str, decision: str) -> None:
+    """Write a per-(agent, tool) override into settings.json. Called when the
+    user picks "Always allow" on an approval card."""
+    if decision not in _VALID_DECISIONS:
+        return
+    try:
+        import app as _app
+        perms = _app.room_settings.setdefault("tool_permissions", {})
+        agent_perms = perms.setdefault(agent, {})
+        agent_perms[tool] = decision
+        _app._save_settings()
+    except Exception as exc:
+        log.warning("failed to persist tool override %s/%s=%s: %s",
+                    agent, tool, decision, exc)
+
+
+def _audit_tool_call(agent: str, tool: str, decision: str,
+                     args_summary: str = "", approval_msg_id: int | None = None) -> None:
+    """Append a tool_call entry to data/tool_calls.jsonl. Skipped for tier-0
+    'allow' calls to keep the log tractable (read-only happy path is high-
+    frequency and uninteresting for audit)."""
+    tier = TOOL_TIERS.get(tool, 1)
+    if tier == 0 and decision == "allow":
+        return
+    try:
+        import app as _app
+        data_dir = _app.config.get("server", {}).get("data_dir", "./data") if _app.config else "./data"
+        log_path = Path(data_dir) / "tool_calls.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "tool_call",
+            "agent": agent,
+            "tool": tool,
+            "tier": tier,
+            "decision": decision,
+            "args": args_summary,
+            "timestamp": time.time(),
+        }
+        if approval_msg_id is not None:
+            record["approval_msg_id"] = approval_msg_id
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        log.warning("failed to write tool_call audit entry: %s", exc)
+
+
+def _request_approval(agent: str, tool: str, args_summary: str,
+                      channel: str = "general", timeout: float = 300.0) -> str:
+    """Post an approval card in chat and block (this thread) until the user
+    clicks Allow / Deny / Always allow. Returns the chosen string, or
+    'timeout' if no answer within `timeout` seconds.
+
+    Sync function — safe to call from FastMCP worker threads. The future is
+    resolved by app.py's resolve_decision endpoint when the user clicks.
+    """
+    if store is None:
+        return "deny"  # can't post the card, fail safe
+    sender = "noto"  # chief-of-staff posts approvals; falls back to system if absent
+    if registry and not registry.is_registered("noto"):
+        sender = "system"
+    text = f"@{agent} wants to use **{tool}**"
+    if args_summary:
+        text += f" ({args_summary})"
+    text += " — approve?"
+    msg = store.add(
+        sender=sender,
+        text=text,
+        msg_type="decision",
+        channel=channel,
+        metadata={
+            "choices": ["Allow", "Deny", "Always allow"],
+            "resolved": False,
+            "is_approval": True,
+            "approval_for": {"agent": agent, "tool": tool},
+        },
+    )
+    if not msg or "id" not in msg:
+        return "deny"
+    msg_id = msg["id"]
+    fut: concurrent.futures.Future = concurrent.futures.Future()
+    with _approvals_lock:
+        _pending_approvals[msg_id] = fut
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return "timeout"
+    except Exception:
+        return "deny"
+    finally:
+        with _approvals_lock:
+            _pending_approvals.pop(msg_id, None)
+
+
+def resolve_pending_approval(msg_id: int, chosen: str) -> bool:
+    """Called from app.resolve_decision when the user clicks an approval
+    card. Sets the matching Future's result. Returns True if a pending
+    approval was matched (so the caller knows it was an approval card)."""
+    with _approvals_lock:
+        fut = _pending_approvals.get(msg_id)
+    if fut is None or fut.done():
+        return False
+    try:
+        fut.set_result(chosen)
+        return True
+    except Exception:
+        return False
+
+
+def authorize_tool(agent: str, tool: str, *, args_summary: str = "",
+                   channel: str = "general") -> tuple[bool, str | None]:
+    """Identity-resolved tools call this AFTER they have a canonical agent
+    name. Returns (allowed, error_message_or_None). On 'ask', blocks until
+    the user answers via the in-chat approval card.
+
+    Existing tier-0/1 tools call this right after _resolve_tool_identity
+    succeeds. Default policy keeps tier-0/1 = allow, so behavior is
+    unchanged for legacy setups (no tool_permissions in settings.json).
+    """
+    if not agent or not tool:
+        return False, "Error: missing agent or tool for authorization."
+    decision = _check_tool_permission(agent, tool)
+    if decision == "allow":
+        _audit_tool_call(agent, tool, "allow", args_summary)
+        return True, None
+    if decision == "deny":
+        _audit_tool_call(agent, tool, "deny", args_summary)
+        return False, f"Error: '{tool}' is not permitted for {agent}."
+    if decision == "ask":
+        # Block this worker thread until the user answers.
+        # store.add of the approval card needs the msg id back; the tool
+        # already had a chance to set channel context via the call site.
+        choice = _request_approval(agent, tool, args_summary, channel=channel)
+        if choice in ("Allow", "Always allow"):
+            if choice == "Always allow":
+                _persist_per_tool_override(agent, tool, "allow")
+            _audit_tool_call(agent, tool, "allow_after_ask", args_summary)
+            return True, None
+        if choice == "Deny":
+            _audit_tool_call(agent, tool, "deny_after_ask", args_summary)
+            return False, f"Error: '{tool}' was denied by the user."
+        # timeout / unknown
+        _audit_tool_call(agent, tool, choice, args_summary)
+        return False, f"Error: '{tool}' approval timed out."
+    return False, f"Error: '{tool}' permission unresolved."
 
 
 def _resolve_tool_identity(
@@ -945,9 +1199,235 @@ def chat_summary(
     return f"Unknown action: {action}. Valid actions: read, write."
 
 
+# ---------------------------------------------------------------------------
+# Tier-2 cross-agent tools
+# ---------------------------------------------------------------------------
+# These tools act on OTHER agents' tmux sessions. Default policy = deny;
+# the per-agent override `noto.tier_2 = allow` (see AGENT_DEFAULTS) ships
+# them enabled for the chief-of-staff seat. Other agents get refused
+# unless the user explicitly grants the permission via the Settings UI.
+
+import re as _re_mod
+import subprocess as _sp
+import signal as _sig
+
+# Recognized approval-prompt shapes. Used to validate that the target's
+# tmux pane is actually showing a prompt before agent_press_approval will
+# blindly send keys (defense in depth: limits the blast radius if Noto is
+# tricked into pressing keys at the wrong moment).
+_APPROVAL_PROMPT_PATTERNS = [
+    _re_mod.compile(r"Allow the .* MCP server to run tool", _re_mod.IGNORECASE),
+    _re_mod.compile(r"Allow .* to run", _re_mod.IGNORECASE),
+    _re_mod.compile(r"Trust the files in this folder", _re_mod.IGNORECASE),
+    _re_mod.compile(r"Do you want to allow", _re_mod.IGNORECASE),
+    _re_mod.compile(r"\b1\.\s*Allow\b", _re_mod.IGNORECASE),
+    _re_mod.compile(r"\(y/n\)", _re_mod.IGNORECASE),
+]
+
+_VALID_APPROVAL_KEYS = {"1", "2", "3", "4", "y", "n", "Enter"}
+
+# Two prefix conventions exist for wrapper-managed tmux sessions:
+#   - "agentchattr-{name}" (legacy default)
+#   - "notolink-{name}"    (used by start_noto.sh; future renames)
+# Try both when locating a target's pane.
+_TMUX_PREFIXES = ("agentchattr-", "notolink-")
+
+
+def _resolve_target_tmux_session(target: str) -> str | None:
+    """Return the actual tmux session name for the target agent, or None
+    if no session matching either prefix exists."""
+    if not target:
+        return None
+    for prefix in _TMUX_PREFIXES:
+        candidate = f"{prefix}{target}"
+        try:
+            r = _sp.run(
+                ["tmux", "has-session", "-t", candidate],
+                capture_output=True, timeout=2,
+            )
+            if r.returncode == 0:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _capture_pane(session_name: str) -> str:
+    """Return the full text of the target pane, or '' on failure."""
+    try:
+        r = _sp.run(
+            ["tmux", "capture-pane", "-p", "-t", session_name],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0:
+            return r.stdout
+    except Exception:
+        pass
+    return ""
+
+
+def _looks_like_approval_prompt(pane_text: str) -> bool:
+    if not pane_text:
+        return False
+    # Only check the last ~30 lines; older prompts that have scrolled off
+    # don't count.
+    tail = "\n".join(pane_text.splitlines()[-30:])
+    return any(p.search(tail) for p in _APPROVAL_PROMPT_PATTERNS)
+
+
+def agent_press_approval(target: str, choice: str, ctx: Context | None = None) -> str:
+    """Press a single keystroke on another agent's tmux session to clear
+    an approval prompt (Codex/Claude per-tool prompts, trust-this-folder
+    dialogs, y/n confirmations).
+
+    Args:
+      target: canonical name of the target agent (e.g. "outsider").
+      choice: one of {"1","2","3","4","y","n","Enter"}.
+
+    Returns a status string. Refuses if no recognized prompt is currently
+    visible in the target's pane (defense in depth).
+
+    Permission tier: 2. Default deny except for "noto" (chief-of-staff).
+    """
+    sender, err = _resolve_tool_identity("", ctx, field_name="caller", required=True)
+    if err:
+        return err
+    if not sender:
+        return "Error: caller could not be resolved."
+
+    target = (target or "").strip()
+    if not target:
+        return "Error: target is required."
+    if registry and not registry.is_registered(target):
+        return f"Error: target '{target}' is not a registered agent."
+    if choice not in _VALID_APPROVAL_KEYS:
+        return f"Error: choice must be one of {sorted(_VALID_APPROVAL_KEYS)}."
+
+    # Permission gate (Tier 2 — default deny; allow for noto via AGENT_DEFAULTS).
+    args_summary = f"target={target} choice={choice}"
+    ok, err = authorize_tool(
+        sender, "agent_press_approval",
+        args_summary=args_summary,
+    )
+    if not ok:
+        return err or "Error: not permitted."
+
+    session = _resolve_target_tmux_session(target)
+    if not session:
+        return f"Error: no tmux session found for '{target}' (looked for {' / '.join(p + target for p in _TMUX_PREFIXES)})."
+
+    pane_before = _capture_pane(session)
+    if not _looks_like_approval_prompt(pane_before):
+        # Defense in depth: don't blindly send keys when the target isn't
+        # showing a prompt we recognize. Return the last few pane lines so
+        # Noto can decide what to do.
+        last5 = "\n".join((pane_before or "").splitlines()[-5:])
+        return (f"Refused: '{target}' does not appear to be at a recognized "
+                f"approval prompt. Last pane lines:\n{last5}")
+
+    try:
+        if choice == "Enter":
+            _sp.run(["tmux", "send-keys", "-t", session, "Enter"],
+                    capture_output=True, timeout=2)
+        else:
+            _sp.run(["tmux", "send-keys", "-t", session, "-l", choice],
+                    capture_output=True, timeout=2)
+            time.sleep(0.1)
+            _sp.run(["tmux", "send-keys", "-t", session, "Enter"],
+                    capture_output=True, timeout=2)
+    except Exception as exc:
+        return f"Error: send-keys failed: {exc}"
+
+    # Brief settle, then re-capture to confirm the prompt cleared.
+    time.sleep(0.5)
+    pane_after = _capture_pane(session)
+    last5 = "\n".join((pane_after or "").splitlines()[-5:])
+    cleared = not _looks_like_approval_prompt(pane_after)
+    status = "ok (prompt cleared)" if cleared else "ok (prompt still visible — pane below)"
+    return f"agent_press_approval {status}\nLast pane lines for {target}:\n{last5}"
+
+
+def agent_relaunch(target: str, ctx: Context | None = None) -> str:
+    """SIGTERM the target agent's wrapper.py process so the wrapper's own
+    restart loop respawns the inner CLI fresh. V2 identity persistence
+    restores the agent's canonical name and bearer token across the cycle.
+
+    Use when an agent is wedged in a way agent_press_approval can't fix
+    (TUI corruption, deep state confusion, frozen claude-code).
+
+    Permission tier: 2. Default deny except for "noto".
+    """
+    sender, err = _resolve_tool_identity("", ctx, field_name="caller", required=True)
+    if err:
+        return err
+    if not sender:
+        return "Error: caller could not be resolved."
+
+    target = (target or "").strip()
+    if not target:
+        return "Error: target is required."
+    if registry and not registry.is_registered(target):
+        return f"Error: target '{target}' is not a registered agent."
+
+    args_summary = f"target={target}"
+    ok, err = authorize_tool(sender, "agent_relaunch", args_summary=args_summary)
+    if not ok:
+        return err or "Error: not permitted."
+
+    # Find the wrapper PID via pgrep — match the python process running
+    # wrapper.py with this target's --label arg.
+    try:
+        r = _sp.run(
+            ["pgrep", "-f", f"wrapper.py.*--label[ =]{target}\\b"],
+            capture_output=True, text=True, timeout=3,
+        )
+        pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+    except Exception as exc:
+        return f"Error: pgrep failed: {exc}"
+
+    if not pids:
+        # Fallback: --label may be empty (e.g. funky/outsider). Try
+        # matching by base + cwd, less precise — only PID 1 if multiple.
+        return (f"Error: could not locate wrapper.py for '{target}'. "
+                f"Try matching the launcher logs or relaunch manually.")
+
+    killed = []
+    for pid in pids:
+        try:
+            os.kill(pid, _sig.SIGTERM)
+            killed.append(pid)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return f"Error: PermissionError killing pid {pid} (not owner)."
+
+    # The wrapper's own loop respawns within ~3s. Poll briefly for fresh
+    # heartbeat to confirm.
+    import urllib.request
+    deadline = time.time() + 12
+    came_back = False
+    while time.time() < deadline:
+        time.sleep(1)
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:8300/api/heartbeat/{target}",
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.status == 200:
+                    came_back = True
+                    break
+        except Exception:
+            pass
+    status = "respawned" if came_back else "killed but not yet heartbeating"
+    return f"agent_relaunch {status}: killed pids={killed}"
+
+
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
     chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    # Tier 2 — Noto-only by default.
+    agent_press_approval, agent_relaunch,
 ]
 
 
