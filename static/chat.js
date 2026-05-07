@@ -1387,6 +1387,23 @@ function showPillPopover(pillEl, opts) {
                 </select>
             </div>`;
         })() : ''}
+        ${opts.mode !== 'pending' ? (() => {
+            // Kick section: only render when the agent is currently a member
+            // of the active channel (otherwise there's nothing to kick from).
+            // Active-channel + membership lookups via window.* helpers so this
+            // works whether or not the agent's pill row is in #general.
+            const ch = window.activeChannel || 'general';
+            if (typeof window.isAgentInChannel !== 'function') return '';
+            if (!window.isAgentInChannel(opts.name, ch)) return '';
+            return `<div class="pill-popover-section">
+                <button class="pill-popover-kick-btn" data-agent="${escapeHtml(opts.name)}" data-channel="${escapeHtml(ch)}">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M3 4l10 8M13 4l-10 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    Kick from #${escapeHtml(ch)}
+                </button>
+            </div>`;
+        })() : ''}
         ${opts.mode !== 'pending' ? `
             <div class="pill-popover-section">
                 <button class="pill-popover-permissions-btn" data-agent="${escapeHtml(opts.name)}">
@@ -1545,6 +1562,22 @@ function showPillPopover(pillEl, opts) {
                 if (!soundCache[val]) soundCache[val] = new Audio(`/static/sounds/${val}.mp3`);
                 soundCache[val].currentTime = 0;
                 soundCache[val].play().catch(() => {});
+            }
+        });
+    }
+
+    // Kick button: opens the existing kick-confirm popover anchored to
+    // the same pill. Reuses showKickConfirm so the kick flow stays in one
+    // place. Pill popover closes; the kick-confirm pop takes over.
+    const kickBtn = popover.querySelector('.pill-popover-kick-btn');
+    if (kickBtn) {
+        kickBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const ch = kickBtn.dataset.channel;
+            const label = opts.label || opts.name;
+            closePopover();
+            if (typeof showKickConfirm === 'function' && pillEl) {
+                showKickConfirm(pillEl, opts.name, label, ch);
             }
         });
     }

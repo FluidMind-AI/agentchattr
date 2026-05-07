@@ -825,6 +825,28 @@ header h1 {
 }
 .np-agent-perms-reset:hover { text-decoration: underline; }
 
+/* Pill popover Kick button — destructive action, red treatment */
+.pill-popover-kick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: rgba(239, 68, 68, 0.06);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: hsl(0 80% 75%);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+.pill-popover-kick-btn:hover {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* Pill popover Permissions button row */
 .pill-popover-permissions-btn {
     display: inline-flex;
