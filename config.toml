@@ -77,6 +77,21 @@ label = "MiniMax"
 api_key_env = "MINIMAX_API_KEY"
 temperature = 1.0
 
+# Noto — chief-of-staff. Runs on the claude binary but registered as its own
+# base so it gets the NotoNote cloud-blue color and a distinct identity in
+# the agent roster. Launched via notolink's start_noto.sh; not part of the
+# standard nuke-and-launch roster.
+[agents.noto]
+command = "claude"
+cwd = "../notolink"
+color = "#00BCFF"
+label = "Noto"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"
