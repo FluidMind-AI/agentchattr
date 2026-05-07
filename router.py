@@ -5,14 +5,27 @@ import re
 
 class Router:
     def __init__(self, agent_names: list[str], default_mention: str = "both",
-                 max_hops: int = 4, online_checker=None):
+                 max_hops: int = 4, online_checker=None,
+                 max_hops_resolver=None):
         self.agent_names = set(n.lower() for n in agent_names)
         self.default_mention = default_mention
         self.max_hops = max_hops
         self._online_checker = online_checker  # callable() -> set of online agent names
+        # Optional callable(channel) -> int. When set, takes precedence over
+        # self.max_hops at hop-time. Used to thread per-channel overrides
+        # without needing to push them into router state on every change.
+        self._max_hops_resolver = max_hops_resolver
         # Per-channel state: { channel: { hop_count, paused, guard_emitted } }
         self._channels: dict[str, dict] = {}
         self._build_pattern()
+
+    def _max_hops_for(self, channel: str) -> int:
+        if self._max_hops_resolver is not None:
+            try:
+                return int(self._max_hops_resolver(channel))
+            except Exception:
+                pass
+        return self.max_hops
 
     def _get_ch(self, channel: str) -> dict:
         if channel not in self._channels:
@@ -74,7 +87,7 @@ class Router:
             if not mentions:
                 return []
             ch["hop_count"] += 1
-            if ch["hop_count"] > self.max_hops:
+            if ch["hop_count"] > self._max_hops_for(channel):
                 ch["paused"] = True
                 return []
             # Don't route back to self
