@@ -92,6 +92,71 @@ mcp_transport = "http"
 mcp_merge_project = true
 extra_args = ["--permission-mode", "acceptEdits"]
 
+# --- NotoLink platform team ---
+# Specialists that work on NotoLink itself, coordinated by Noto in
+# #notolink-dev. Each is a distinct claude-based agent so the roster shows
+# them as separate identities with their own color and routing.
+
+# Pixel — frontend specialist. Owns engine/static/.
+[agents.pixel]
+command = "claude"
+cwd = "../notolink/engine"
+color = "#EC4899"
+label = "Pixel"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
+# Forge — backend specialist. Owns engine/*.py.
+[agents.forge]
+command = "claude"
+cwd = "../notolink/engine"
+color = "#F97316"
+label = "Forge"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
+# Polish — code reviewer. Reviews PRs from pixel/forge/probe.
+[agents.polish]
+command = "claude"
+cwd = "../notolink/engine"
+color = "#22C55E"
+label = "Polish"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
+# Inquest — critical auditor. Adversarial review on security/edges/races.
+[agents.inquest]
+command = "claude"
+cwd = "../notolink/engine"
+color = "#DC2626"
+label = "Inquest"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
+# Probe — tests/QA specialist. Owns engine/tests/.
+[agents.probe]
+command = "claude"
+cwd = "../notolink/engine"
+color = "#06B6D4"
+label = "Probe"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"
