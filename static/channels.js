@@ -603,6 +603,14 @@ function deleteChannel(name) {
 const SIDEBAR_MODE_KEY = 'agentchattr-channel-sidebar-mode';
 const SIDEBAR_WIDTH_KEY = 'agentchattr-channel-sidebar-w';
 
+function getChannelSidebarMode() {
+    // Persisted in localStorage by setChannelSidebarMode; default is 'sidebar'.
+    // Reads localStorage rather than the DOM so the value is correct even
+    // before setChannelSidebarMode runs (e.g. when Settings page renders
+    // before the channel sidebar is initialised).
+    return localStorage.getItem(SIDEBAR_MODE_KEY) || 'sidebar';
+}
+
 function setChannelSidebarMode(mode, persist = true) {
     const sidebar = document.getElementById('channel-sidebar');
     const top = document.getElementById('channel-sidebar-top');
@@ -744,6 +752,7 @@ window.deleteChannel = deleteChannel;
 window.showChannelRenameDialog = showChannelRenameDialog;
 window.renderChannelSidebar = renderChannelSidebar;
 window.setChannelSidebarMode = setChannelSidebarMode;
+window.getChannelSidebarMode = getChannelSidebarMode;
 window.Channels = { init: _channelsInit };
 
 
