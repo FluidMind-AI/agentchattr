@@ -2022,7 +2022,14 @@ async def resolve_decision(msg_id: int, request: Request):
     is_approval = False
     try:
         import mcp_bridge
-        is_approval = mcp_bridge.resolve_pending_approval(msg_id, chosen)
+        import asyncio
+        # resolve_pending_approval may briefly poll for the calling worker
+        # thread to register its Future (race window after store.add returns
+        # and broadcasts). Run in a worker thread so the asyncio loop stays
+        # responsive during the wait.
+        is_approval = await asyncio.to_thread(
+            mcp_bridge.resolve_pending_approval, msg_id, chosen
+        )
     except Exception:
         import traceback; traceback.print_exc()
     # Post the chosen answer as a regular chat message tagged @sender,

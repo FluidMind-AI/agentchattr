@@ -247,7 +247,12 @@ def _check_tool_permission(agent: str, tool: str) -> str:
 
 def _persist_per_tool_override(agent: str, tool: str, decision: str) -> None:
     """Write a per-(agent, tool) override into settings.json. Called when the
-    user picks "Always allow" on an approval card."""
+    user picks "Always allow" on an approval card.
+
+    Also schedules a settings broadcast so any open Settings → Permissions
+    panel reflects the new override immediately (matches PUT /api/permissions
+    semantics — that endpoint already broadcasts).
+    """
     if decision not in _VALID_DECISIONS:
         return
     try:
@@ -256,6 +261,17 @@ def _persist_per_tool_override(agent: str, tool: str, decision: str) -> None:
         agent_perms = perms.setdefault(agent, {})
         agent_perms[tool] = decision
         _app._save_settings()
+        # broadcast_settings is async; we're on a FastMCP worker thread.
+        # Schedule it on the main event loop so connected WS clients pick
+        # up the new override immediately (e.g. the permissions panel
+        # showing "Always allow" landing).
+        loop = getattr(_app, "_event_loop", None)
+        if loop is not None and _app.broadcast_settings is not None:
+            try:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(_app.broadcast_settings(), loop)
+            except Exception as bc_exc:
+                log.warning("failed to schedule broadcast_settings: %s", bc_exc)
     except Exception as exc:
         log.warning("failed to persist tool override %s/%s=%s: %s",
                     agent, tool, decision, exc)
@@ -294,14 +310,15 @@ def _audit_tool_call(agent: str, tool: str, decision: str,
 def _request_approval(agent: str, tool: str, args_summary: str,
                       channel: str = "general", timeout: float = 300.0) -> str:
     """Post an approval card in chat and block (this thread) until the user
-    clicks Allow / Deny / Always allow. Returns the chosen string, or
-    'timeout' if no answer within `timeout` seconds.
+    clicks Allow / Deny / Always allow. Returns the chosen string ("Allow"
+    / "Deny" / "Always allow"), "Deny" on early-fail (so it's symmetric
+    with the user-deny path through authorize_tool), or "timeout".
 
     Sync function — safe to call from FastMCP worker threads. The future is
     resolved by app.py's resolve_decision endpoint when the user clicks.
     """
     if store is None:
-        return "deny"  # can't post the card, fail safe
+        return "Deny"  # can't post the card, fail safe (canonical case)
     sender = "noto"  # chief-of-staff posts approvals; falls back to system if absent
     if registry and not registry.is_registered("noto"):
         sender = "system"
@@ -309,42 +326,74 @@ def _request_approval(agent: str, tool: str, args_summary: str,
     if args_summary:
         text += f" ({args_summary})"
     text += " — approve?"
-    msg = store.add(
-        sender=sender,
-        text=text,
-        msg_type="decision",
-        channel=channel,
-        metadata={
-            "choices": ["Allow", "Deny", "Always allow"],
-            "resolved": False,
-            "is_approval": True,
-            "approval_for": {"agent": agent, "tool": tool},
-        },
-    )
-    if not msg or "id" not in msg:
-        return "deny"
-    msg_id = msg["id"]
+    # Pre-register the Future BEFORE store.add so a fast user click can never
+    # arrive at resolve_decision before the future is in place. We register
+    # under a sentinel key (id of the Future object), then re-key under the
+    # real msg_id once store.add returns. resolve_pending_approval also has a
+    # brief wait, so even if there's a sliver of time between the broadcast
+    # and the rekey, the click won't miss.
     fut: concurrent.futures.Future = concurrent.futures.Future()
+    sentinel_key = f"_pending_{id(fut)}"
     with _approvals_lock:
-        _pending_approvals[msg_id] = fut
+        _pending_approvals[sentinel_key] = fut
+    msg_id = None
     try:
-        return fut.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        return "timeout"
-    except Exception:
-        return "deny"
+        msg = store.add(
+            sender=sender,
+            text=text,
+            msg_type="decision",
+            channel=channel,
+            metadata={
+                "choices": ["Allow", "Deny", "Always allow"],
+                "resolved": False,
+                "is_approval": True,
+                "approval_for": {"agent": agent, "tool": tool},
+            },
+        )
+        if not msg or "id" not in msg:
+            return "Deny"
+        msg_id = msg["id"]
+        with _approvals_lock:
+            _pending_approvals.pop(sentinel_key, None)
+            _pending_approvals[msg_id] = fut
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return "timeout"
+        except Exception:
+            return "Deny"
     finally:
         with _approvals_lock:
-            _pending_approvals.pop(msg_id, None)
+            _pending_approvals.pop(sentinel_key, None)
+            if msg_id is not None:
+                _pending_approvals.pop(msg_id, None)
 
 
-def resolve_pending_approval(msg_id: int, chosen: str) -> bool:
+def resolve_pending_approval(msg_id: int, chosen: str, *,
+                             wait_ms: int = 500) -> bool:
     """Called from app.resolve_decision when the user clicks an approval
     card. Sets the matching Future's result. Returns True if a pending
-    approval was matched (so the caller knows it was an approval card)."""
-    with _approvals_lock:
-        fut = _pending_approvals.get(msg_id)
-    if fut is None or fut.done():
+    approval was matched (so the caller knows it was an approval card and
+    can skip the redundant @-reply).
+
+    `wait_ms` is a short blocking budget for the rare race where the user
+    clicks faster than the calling worker thread can register the future
+    after store.add returns. Polls every ~25 ms until the budget is up.
+    Total wait is bounded; safe to call from an async coroutine because the
+    polls are short and don't cooperate-yield (callers can wrap in
+    asyncio.to_thread if event-loop responsiveness becomes a concern).
+    """
+    deadline = time.time() + max(0, wait_ms) / 1000.0
+    fut = None
+    while True:
+        with _approvals_lock:
+            fut = _pending_approvals.get(msg_id)
+        if fut is not None:
+            break
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.025)
+    if fut.done():
         return False
     try:
         fut.set_result(chosen)

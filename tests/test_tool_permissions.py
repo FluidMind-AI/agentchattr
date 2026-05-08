@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -109,7 +110,29 @@ class ApprovalFutureFlow(unittest.TestCase):
                 mcp_bridge._pending_approvals.pop(msg_id, None)
 
     def test_resolve_pending_approval_returns_false_for_unknown_msg(self):
-        self.assertFalse(mcp_bridge.resolve_pending_approval(123456, "Allow"))
+        # Pass wait_ms=0 so the test doesn't actually sleep its 500ms budget.
+        self.assertFalse(mcp_bridge.resolve_pending_approval(123456, "Allow", wait_ms=0))
+
+    def test_resolve_pending_approval_waits_for_late_registration(self):
+        # Race regression: simulate the worker thread registering the
+        # Future AFTER resolve_pending_approval is called. The 500ms wait
+        # should bridge the gap.
+        import threading
+        msg_id = 7777
+        fut = concurrent.futures.Future()
+        def register_late():
+            time.sleep(0.05)  # simulate ~50ms gap
+            with mcp_bridge._approvals_lock:
+                mcp_bridge._pending_approvals[msg_id] = fut
+        threading.Thread(target=register_late, daemon=True).start()
+        try:
+            self.assertTrue(
+                mcp_bridge.resolve_pending_approval(msg_id, "Allow", wait_ms=500)
+            )
+            self.assertEqual(fut.result(timeout=0.1), "Allow")
+        finally:
+            with mcp_bridge._approvals_lock:
+                mcp_bridge._pending_approvals.pop(msg_id, None)
 
     def test_resolve_pending_approval_idempotent(self):
         msg_id = 998
