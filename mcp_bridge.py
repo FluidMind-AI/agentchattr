@@ -796,18 +796,29 @@ def chat_rules(
       - list: Returns active rules (the current working style).
       - propose: Propose a new rule for human approval. Requires rule text + sender + channel.
 
-    Pass channel to place the proposal card in the correct chat channel (default: 'general').
-    Agents cannot activate, edit, or delete rules — only humans can do that from the web UI."""
+    Rules can be channel-scoped: a rule proposed from a named channel (e.g. 'notolink-dev')
+    only applies to that channel and is hidden from agents in other channels. Rules
+    proposed from 'general' (or with channel omitted) are global — they apply everywhere.
+
+    Pass channel to place the proposal card in the correct chat channel and to set
+    the rule's scope. Agents cannot activate, edit, or delete rules — only humans can
+    do that from the web UI."""
     sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=False)
     if err:
         return err
     action = action.strip().lower()
 
+    # 'general' is the default chat channel but it should NOT be treated as a
+    # rule-scope filter — rules created in #general have historically been
+    # global. Treat 'general' as global scope; named channels are scoped.
+    rule_scope = "" if (channel or "general").strip() == "general" else channel.strip()
+
     if action == "list":
-        active = rules.active_list()
+        active = rules.active_list(rule_scope)
         if not active["rules"]:
             return "No active rules."
-        lines = [f"Active rules (epoch {active['epoch']}):"]
+        scope_note = f" for #{rule_scope}" if rule_scope else ""
+        lines = [f"Active rules{scope_note} (epoch {active['epoch']}):"]
         for i, r in enumerate(active["rules"], 1):
             lines.append(f"  {i}. {r}")
         return "\n".join(lines)
@@ -817,7 +828,7 @@ def chat_rules(
             return "Error: rule text is required."
         if not sender.strip():
             return "Error: sender is required."
-        result = rules.propose(rule, sender, reason)
+        result = rules.propose(rule, sender, reason, rule_scope)
         if result is None:
             return "Error: too many rules."
         # Add proposal card to chat timeline

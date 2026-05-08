@@ -38,6 +38,9 @@ class RuleStore:
                 self._rules = raw
                 self._migrate_legacy()
                 self._epoch = 1
+            # Backfill channel field for rules created before per-channel scope
+            for r in self._rules:
+                r.setdefault("channel", "")
             if self._rules:
                 self._next_id = max(d["id"] for d in self._rules) + 1
         except (json.JSONDecodeError, KeyError):
@@ -59,6 +62,8 @@ class RuleStore:
                 r["author"] = r.pop("owner")
             elif "author" not in r:
                 r["author"] = r.get("owner", "user")
+            # Pre-channel rules are global — empty string is the global scope
+            r.setdefault("channel", "")
 
     def _save(self):
         data = {
@@ -99,10 +104,23 @@ class RuleStore:
                     return dict(r)
             return None
 
-    def active_list(self) -> dict:
-        """Return compact active rules for agent injection."""
+    def active_list(self, channel: str = "") -> dict:
+        """Return compact active rules for agent injection.
+
+        When channel is non-empty, returns rules scoped to that channel plus
+        global rules (channel == ""). When channel is empty, returns every
+        active rule regardless of scope.
+        """
         with self._lock:
-            rules = [r["text"] for r in self._rules if r.get("status") == "active"]
+            scope = (channel or "").strip()
+            rules = []
+            for r in self._rules:
+                if r.get("status") != "active":
+                    continue
+                rule_scope = r.get("channel", "") or ""
+                if scope and rule_scope and rule_scope != scope:
+                    continue
+                rules.append(r["text"])
             return {
                 "epoch": self._epoch,
                 "rules": rules,
@@ -114,7 +132,8 @@ class RuleStore:
 
     # --- Writes ---
 
-    def propose(self, text: str, author: str, reason: str = "") -> dict | None:
+    def propose(self, text: str, author: str, reason: str = "",
+                channel: str = "") -> dict | None:
         with self._lock:
             total = len(self._rules)
             if total >= 50:  # generous total cap including all states
@@ -125,6 +144,7 @@ class RuleStore:
                 "text": text.strip()[:MAX_TEXT_CHARS],
                 "author": author.strip(),
                 "reason": reason.strip()[:MAX_REASON_CHARS],
+                "channel": (channel or "").strip(),
                 "status": "pending",
                 "created_at": time.time(),
             }

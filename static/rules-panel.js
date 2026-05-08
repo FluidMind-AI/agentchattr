@@ -166,8 +166,16 @@ function renderRulesPanel() {
     list.innerHTML = '';
 
     const normalize = (s) => s === 'proposed' ? 'draft' : (s === 'approved' ? 'active' : (s || 'draft'));
-    // Filter out pending rules — they only exist as proposal cards in the timeline
-    const panelRules = rules.filter(r => r.status !== 'pending');
+    // Filter out pending rules — they only exist as proposal cards in the timeline.
+    // Also filter by current channel: a channel-scoped rule (channel set, not 'general')
+    // is hidden in other channels. Global rules (channel === '' or 'general') always show.
+    const activeChannel = window.activeChannel || 'general';
+    const isVisibleInChannel = (r) => {
+        const scope = (r.channel || '').trim();
+        if (!scope || scope === 'general') return true;
+        return scope === activeChannel;
+    };
+    const panelRules = rules.filter(r => r.status !== 'pending' && isVisibleInChannel(r));
     const activeCount = panelRules.filter(r => normalize(r.status) === 'active').length;
 
     // Update header counter
@@ -291,11 +299,16 @@ function renderRulesPanel() {
             });
 
             const displayStatus = normalize(d.status);
+            const ruleScope = (d.channel || '').trim();
+            const scopeBadge = (ruleScope && ruleScope !== 'general')
+                ? `<span class="rule-scope-badge" title="Scoped to #${window.escapeHtml(ruleScope)}">#${window.escapeHtml(ruleScope)}</span>`
+                : '';
 
             card.innerHTML = `
                 <div class="rule-card-header">
                     <span class="rule-status-dot ${displayStatus}"></span>
                     <div class="rule-text">${window.escapeHtml(d.text || d.decision || '')}</div>
+                    ${scopeBadge}
                 </div>
             `;
             itemsInner.appendChild(card);
