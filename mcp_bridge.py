@@ -1375,10 +1375,13 @@ def agent_relaunch(target: str, ctx: Context | None = None) -> str:
         return err or "Error: not permitted."
 
     # Find the wrapper PID via pgrep — match the python process running
-    # wrapper.py with this target's --label arg.
+    # wrapper.py with this target's --label arg. macOS pgrep uses POSIX
+    # ERE which does NOT support \b, so we end the regex with a tail that
+    # matches whitespace OR the next CLI flag (`--`) OR end-of-line.
+    pattern = f"wrapper.py.*--label[ =]{target}([[:space:]]|--|$)"
     try:
         r = _sp.run(
-            ["pgrep", "-f", f"wrapper.py.*--label[ =]{target}\\b"],
+            ["pgrep", "-f", pattern],
             capture_output=True, text=True, timeout=3,
         )
         pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
@@ -1386,8 +1389,20 @@ def agent_relaunch(target: str, ctx: Context | None = None) -> str:
         return f"Error: pgrep failed: {exc}"
 
     if not pids:
-        # Fallback: --label may be empty (e.g. funky/outsider). Try
-        # matching by base + cwd, less precise — only PID 1 if multiple.
+        # --label may be empty (e.g. funky/outsider launch without an
+        # explicit label). Fall back to looking up the wrapper by canonical
+        # name in the registry — the wrapper persists its assigned slot in
+        # _presence, but we can also pgrep more loosely on the project dir.
+        try:
+            r = _sp.run(
+                ["pgrep", "-f", f"wrapper.py .* --cwd .*{target}"],
+                capture_output=True, text=True, timeout=3,
+            )
+            pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+        except Exception:
+            pass
+
+    if not pids:
         return (f"Error: could not locate wrapper.py for '{target}'. "
                 f"Try matching the launcher logs or relaunch manually.")
 
@@ -1401,24 +1416,23 @@ def agent_relaunch(target: str, ctx: Context | None = None) -> str:
         except PermissionError:
             return f"Error: PermissionError killing pid {pid} (not owner)."
 
-    # The wrapper's own loop respawns within ~3s. Poll briefly for fresh
-    # heartbeat to confirm.
-    import urllib.request
+    # The wrapper's own loop respawns within ~3s. Watch our in-process
+    # presence map (_presence is updated whenever ANY heartbeat arrives —
+    # the wrapper sends them with its OWN bearer token, so we don't need to
+    # authenticate from inside the same process). The previous version
+    # made an UNAUTHENTICATED HTTP probe to /api/heartbeat which is
+    # rejected with 403 for any registered agent name, so it always
+    # reported "not yet heartbeating" even on successful respawn.
+    last_seen_before = _presence.get(target, 0.0)
     deadline = time.time() + 12
     came_back = False
     while time.time() < deadline:
-        time.sleep(1)
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:8300/api/heartbeat/{target}",
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=1) as resp:
-                if resp.status == 200:
-                    came_back = True
-                    break
-        except Exception:
-            pass
+        time.sleep(0.5)
+        with _presence_lock:
+            ts = _presence.get(target, 0.0)
+        if ts > last_seen_before:
+            came_back = True
+            break
     status = "respawned" if came_back else "killed but not yet heartbeating"
     return f"agent_relaunch {status}: killed pids={killed}"
 
