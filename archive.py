@@ -147,7 +147,10 @@ def build_channel_export(store, channel: str, app_version: str = "") -> bytes:
         if "reply_to" in exported:
             reply_id = exported["reply_to"]
             for m in messages:
-                if m["id"] == reply_id:
+                # Tolerate older/malformed rows lacking "id" — just skip
+                # the reply-resolution rather than crash the whole export.
+                m_id = m.get("id")
+                if m_id is not None and m_id == reply_id:
                     exported["reply_to_uid"] = _ensure_uid(m)
                     break
         messages_lines.append(json.dumps(exported, ensure_ascii=False))

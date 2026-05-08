@@ -1822,7 +1822,11 @@ async def get_channel_settings_api(name: str):
 @app.put("/api/channels/{name}/settings")
 async def put_channel_settings_api(name: str, request: Request):
     """Update per-channel settings. Body keys: max_agent_hops, rules_refresh_interval.
-    Pass `null` to clear an override (channel reverts to global default)."""
+    Pass `null` to clear an override (channel reverts to global default).
+
+    Atomic: validates all keys/values up-front, then applies. A 4xx never
+    leaves room_settings partially mutated.
+    """
     name = name.strip().lower()
     if name not in room_settings.get("channels", []):
         return JSONResponse({"error": f"unknown channel: {name}"}, status_code=404)
@@ -1832,16 +1836,14 @@ async def put_channel_settings_api(name: str, request: Request):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
-    changes = 0
+
+    # Phase 1: validate every key/value up-front. Collect resolved changes.
+    pending: list[tuple[str, object]] = []  # (key, value or None-to-clear)
     for key, value in body.items():
         if key not in _CHANNEL_SETTING_KEYS:
-            return JSONResponse(
-                {"error": f"unsupported channel setting: {key}"},
-                status_code=400,
-            )
+            return JSONResponse({"error": f"unsupported channel setting: {key}"}, status_code=400)
         if value is None:
-            set_channel_setting(name, key, None)
-            changes += 1
+            pending.append((key, None))
             continue
         try:
             ivalue = int(value)
@@ -1853,9 +1855,12 @@ async def put_channel_settings_api(name: str, request: Request):
         elif key == "rules_refresh_interval":
             if ivalue < 0 or ivalue > 600:
                 return JSONResponse({"error": "rules_refresh_interval must be 0..600"}, status_code=400)
-        set_channel_setting(name, key, ivalue)
-        changes += 1
-    if changes:
+        pending.append((key, ivalue))
+
+    # Phase 2: apply. All inputs already validated; this loop can't fail mid-way.
+    if pending:
+        for key, ivalue in pending:
+            set_channel_setting(name, key, ivalue)
         _save_settings()
         await broadcast_settings()
     return JSONResponse(get_channel_settings_resolved(name))
