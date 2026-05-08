@@ -121,11 +121,22 @@ function _renderAppearance() {
 function _wireAppearance() {
     const fontSel = document.getElementById('np-font');
     if (fontSel) fontSel.addEventListener('change', () => {
-        _saveSettingsDebounced({ font: fontSel.value });
+        const v = fontSel.value;
+        // Apply font class immediately for the same reason as contrast below.
+        document.body.classList.remove('font-sans', 'font-mono', 'font-serif');
+        document.body.classList.add('font-' + v);
+        _saveSettingsDebounced({ font: v });
     });
     document.querySelectorAll('[data-contrast]').forEach(btn => {
         btn.addEventListener('click', () => {
-            _saveSettingsDebounced({ contrast: btn.getAttribute('data-contrast') });
+            const mode = btn.getAttribute('data-contrast');
+            // Apply immediately so the user sees the change before the WS
+            // round-trip lands. applySettings would do this on broadcast,
+            // but the lag is jarring for an instantaneous-feel toggle.
+            document.body.classList.toggle('high-contrast', mode === 'high');
+            _saveSettingsDebounced({ contrast: mode });
+            // Re-render so the active option-button updates.
+            _renderActiveTab();
         });
     });
     document.querySelectorAll('[data-layout]').forEach(btn => {

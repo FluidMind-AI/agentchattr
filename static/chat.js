@@ -370,6 +370,10 @@ function addCodeCopyButtons(container) {
 function connectWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    // Expose on window so out-of-file callers (settings-page.js) can send.
+    // `let ws` at module top doesn't bind to the global object, so prior
+    // `window.ws` accesses were always undefined.
+    window.ws = ws;
 
     ws.onopen = () => {
         console.log('WebSocket connected');
