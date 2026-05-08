@@ -461,12 +461,22 @@ def _fetch_role(server_port: int, agent_name: str) -> str:
         return ""
 
 
-def _fetch_active_rules(server_port: int, token: str = "") -> dict | None:
-    """Fetch active rules from the server."""
+def _fetch_active_rules(server_port: int, token: str = "",
+                        channel: str = "") -> dict | None:
+    """Fetch active rules from the server.
+
+    When channel is non-empty, the server filters rules to that channel's scope
+    plus any global rules. Agents typically pass their home channel so
+    channel-scoped rules from the team's coordination channel are injected.
+    """
     try:
         import urllib.request
+        import urllib.parse
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        req = urllib.request.Request(f"http://127.0.0.1:{server_port}/api/rules/active", headers=headers)
+        url = f"http://127.0.0.1:{server_port}/api/rules/active"
+        if channel:
+            url += "?" + urllib.parse.urlencode({"channel": channel})
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=3) as resp:
             return json.loads(resp.read())
     except Exception:
@@ -494,7 +504,7 @@ def _report_rule_sync(server_port: int, agent_name: str, epoch: int, token: str 
 
 def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = False, trigger_flag=None,
                    server_port: int = 8300, agent_name: str = "", get_token_fn=None,
-                   refresh_interval: int = 10):
+                   refresh_interval: int = 10, home_channel: str = ""):
     """Poll queue file and inject an MCP read task when triggered."""
     first_mention = True
     last_rules_epoch = 0  # 0 = unknown/cold start — will inject on first trigger
@@ -563,7 +573,7 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
 
                     # Smart rules injection: first trigger, epoch change, or periodic refresh
                     _token = get_token_fn() if get_token_fn else ""
-                    rules_data = _fetch_active_rules(server_port, _token)
+                    rules_data = _fetch_active_rules(server_port, _token, home_channel)
                     trigger_count += 1
                     if rules_data:
                         # Use server-side refresh_interval (live from settings UI)
@@ -627,6 +637,7 @@ def main():
     parser.add_argument("--cwd",           default=None, help="Override the inner agent's working directory (absolute path or relative to engine root)")
     parser.add_argument("--initial-prompt", default=None, help="One-shot prompt sent to the inner agent ~5s after the tmux session boots (for SOP startup rituals: read CLAUDE.md, post 'online', etc.)")
     parser.add_argument("--initial-prompt-delay", type=float, default=5.0, help="Seconds to wait after tmux session creation before injecting --initial-prompt (default 5)")
+    parser.add_argument("--home-channel", default="", help="Channel name used to filter injected rules. Channel-scoped rules in this channel + global rules are injected. Defaults to empty (global rules only).")
     args, extra = parser.parse_known_args()
 
     agent = args.agent
@@ -837,7 +848,8 @@ def main():
             args=(get_identity, inject_fn),
             kwargs={"is_multi_instance": _is_multi_instance, "trigger_flag": _trigger_flag,
                     "server_port": server_port, "agent_name": assigned_name,
-                    "get_token_fn": get_token, "refresh_interval": _refresh_interval},
+                    "get_token_fn": get_token, "refresh_interval": _refresh_interval,
+                    "home_channel": args.home_channel},
             daemon=True,
         )
         _watcher_thread.start()
@@ -852,7 +864,8 @@ def main():
                     args=(get_identity, _watcher_inject_fn),
                     kwargs={"is_multi_instance": _is_multi_instance, "trigger_flag": _trigger_flag,
                             "server_port": server_port, "agent_name": assigned_name,
-                            "get_token_fn": get_token, "refresh_interval": _refresh_interval},
+                            "get_token_fn": get_token, "refresh_interval": _refresh_interval,
+                            "home_channel": args.home_channel},
                     daemon=True,
                 )
                 _watcher_thread.start()

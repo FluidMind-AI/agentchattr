@@ -366,6 +366,13 @@ function switchChannel(name) {
         try { buildMentionToggles(); } catch (_) {}
     }
     Store.set('activeChannel', name);
+    // Re-render rules panel so channel-scoped rules show only in their channel.
+    if (typeof renderRulesPanel === 'function') {
+        try { renderRulesPanel(); } catch (_) {}
+    }
+    if (typeof updateRulesBadge === 'function') {
+        try { updateRulesBadge(); } catch (_) {}
+    }
     // Restore: scroll to saved message, or bottom if none saved
     const savedId = _channelScrollMsg[name];
     if (savedId) {
