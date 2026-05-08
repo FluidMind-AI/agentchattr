@@ -1245,9 +1245,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 text = text.strip()
                 author = event.get("author") or event.get("owner") or room_settings.get("username", "user")
                 reason = event.get("reason", "")
+                proposal_channel = (event.get("channel") or "").strip()
                 is_human = author.lower() == room_settings.get("username", "user").lower()
                 if text:
-                    rule = rules.propose(text, author, reason)
+                    rule = rules.propose(text, author, reason, proposal_channel)
                     if rule:
                         if is_human:
                             # Human-created rules go straight to draft, no card
@@ -2217,9 +2218,13 @@ async def get_rules():
 
 
 @app.get("/api/rules/active")
-async def get_active_rules():
-    """Get compact active rules for agent injection."""
-    data = rules.active_list()
+async def get_active_rules(channel: str = ""):
+    """Get compact active rules for agent injection.
+
+    When ?channel=<name> is supplied, the response is filtered to rules whose
+    channel matches that name plus any global rules (channel == "").
+    """
+    data = rules.active_list(channel)
     data["refresh_interval"] = room_settings.get("rules_refresh_interval", 10)
     return JSONResponse(data)
 
