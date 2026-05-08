@@ -6,8 +6,8 @@
     <title>NotoLink</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=253">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Manrope:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css?v=257">
     <link rel="stylesheet" href="/static/sessions.css?v=224">
     <link rel="stylesheet" href="/static/jobs.css?v=224">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
@@ -66,77 +66,8 @@
             </div>
         </header>
 
-        <div id="settings-bar" class="hidden">
-            <div class="settings-field">
-                <label for="setting-username">Name</label>
-                <input type="text" id="setting-username" placeholder="your name" maxlength="20">
-            </div>
-            <div class="settings-field">
-                <label for="setting-font">Font</label>
-                <select id="setting-font">
-                    <option value="mono">Monospace</option>
-                    <option value="sans">Sans</option>
-                </select>
-            </div>
-            <div class="settings-field">
-                <label for="setting-hops">Loop guard</label>
-                <div class="sched-num-wrap">
-                    <input type="number" id="setting-hops" class="sched-pop-num" min="1" max="50" value="4" title="Max agent-to-agent hops before pausing">
-                    <div class="sched-num-btns">
-                        <button type="button" onclick="stepNumInput('setting-hops',1)" tabindex="-1">&#9650;</button>
-                        <button type="button" onclick="stepNumInput('setting-hops',-1)" tabindex="-1">&#9660;</button>
-                    </div>
-                </div>
-            </div>
-            <div class="settings-field">
-                <label for="setting-history">History</label>
-                <select id="setting-history">
-                    <option value="all">All</option>
-                    <option value="25">25</option>
-                    <option value="50">50</option>
-                    <option value="100">100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
-                </select>
-            </div>
-            <div class="settings-field">
-                <label for="setting-contrast">Contrast</label>
-                <select id="setting-contrast">
-                    <option value="normal">Normal</option>
-                    <option value="high">High</option>
-                </select>
-            </div>
-            <div class="settings-field">
-                <label for="setting-channel-sidebar">Channels</label>
-                <select id="setting-channel-sidebar" title="Show channels in a sidebar (Discord/Slack-style) instead of a top bar">
-                    <option value="top">Top bar</option>
-                    <option value="sidebar" selected>Sidebar</option>
-                </select>
-            </div>
-            <div class="settings-field">
-                <label for="setting-rules-refresh">Rule refresh</label>
-                <select id="setting-rules-refresh" title="How often to re-send active rules to agents">
-                    <option value="0">On rule changes</option>
-                    <option value="5">Every 5 triggers</option>
-                    <option value="10" selected>Every 10 triggers</option>
-                    <option value="20">Every 20 triggers</option>
-                    <option value="50">Every 50 triggers</option>
-                </select>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-field">
-                <div id="sound-settings"></div>
-            </div>
-            <div class="settings-divider"></div>
-            <div class="settings-field">
-                <label>Project History</label>
-                <div class="settings-history-btns">
-                    <button class="settings-btn" onclick="exportHistory()">Export History</button>
-                    <button class="settings-btn" id="import-history-btn" onclick="document.getElementById('import-file').click()">Import History</button>
-                    <input type="file" id="import-file" accept=".zip" style="display:none" onchange="importHistory(this)">
-                </div>
-            </div>
-        </div>
+        <!-- Settings page (full-screen replacement of #app-main while open) -->
+        <div id="settings-page" class="hidden" role="dialog" aria-label="Settings"></div>
 
         <div id="pins-panel" class="hidden">
             <div class="pins-header">
@@ -351,6 +282,7 @@
     <script src="/static/jobs.js?v=224"></script>
     <script src="/static/channels.js?v=227"></script>
     <script src="/static/rules-panel.js?v=223"></script>
-    <script src="/static/chat.js?v=270"></script>
+    <script src="/static/settings-page.js?v=2"></script>
+    <script src="/static/chat.js?v=274"></script>
 </body>
 </html>

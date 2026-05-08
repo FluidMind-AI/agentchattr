@@ -1372,6 +1372,53 @@ function showPillPopover(pillEl, opts) {
                 </div>
             </div>`;
         })()}
+        ${opts.mode !== 'pending' ? (() => {
+            // Sound section: per-agent override of the default notification sound.
+            // Moved here from the old #settings-bar's #sound-settings block.
+            const cur = soundPrefs[opts.name] || '';
+            const opts_html = SOUND_OPTIONS.map(o =>
+                `<option value="${o.value}" ${cur === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+            ).join('');
+            return `<div class="pill-popover-section">
+                <label class="pill-popover-label">Sound</label>
+                <select class="pill-popover-sound" data-agent="${escapeHtml(opts.name)}">
+                    <option value="" ${!cur ? 'selected' : ''}>Use default</option>
+                    ${opts_html}
+                </select>
+            </div>`;
+        })() : ''}
+        ${opts.mode !== 'pending' ? (() => {
+            // Kick section: render only when the agent is on the channel's
+            // EXPLICIT member list. isAgentInChannel returns true on "open"
+            // channels (no member list — the default state) which would
+            // make the button a silent no-op: remove_channel_members
+            // filters from an empty list, set_channel_members([])
+            // re-opens the channel, broadcast, agent's pill returns
+            // unchanged. Guard on getChannelMembers so the section only
+            // shows when there's an actual entry to remove.
+            const ch = window.activeChannel || 'general';
+            if (typeof window.getChannelMembers !== 'function') return '';
+            const members = window.getChannelMembers(ch);
+            if (!members || members.indexOf(opts.name) === -1) return '';
+            return `<div class="pill-popover-section">
+                <button class="pill-popover-kick-btn" data-agent="${escapeHtml(opts.name)}" data-channel="${escapeHtml(ch)}">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M3 4l10 8M13 4l-10 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    Kick from #${escapeHtml(ch)}
+                </button>
+            </div>`;
+        })() : ''}
+        ${opts.mode !== 'pending' ? `
+            <div class="pill-popover-section">
+                <button class="pill-popover-permissions-btn" data-agent="${escapeHtml(opts.name)}">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M8 1.5L2.5 4v4c0 3.5 2.4 6 5.5 7 3.1-1 5.5-3.5 5.5-7V4L8 1.5z" stroke="currentColor" stroke-width="1.3" fill="none"/>
+                    </svg>
+                    Permissions for ${escapeHtml(opts.label || opts.name)}
+                </button>
+            </div>
+        ` : ''}
     `;
 
     const inputEl = popover.querySelector('.pill-popover-input');
@@ -1505,6 +1552,51 @@ function showPillPopover(pillEl, opts) {
             buildMentionToggles();
             popover.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
             if (colorInput) colorInput.value = defaultColor;
+        });
+    }
+
+    // Sound select: per-agent override (localStorage-only). Mirrors the
+    // change handler that buildSoundSettings used in the legacy strip.
+    const soundSelect = popover.querySelector('.pill-popover-sound');
+    if (soundSelect) {
+        soundSelect.addEventListener('change', () => {
+            const val = soundSelect.value;
+            soundPrefs[opts.name] = val;
+            localStorage.setItem('agentchattr-sounds', JSON.stringify(soundPrefs));
+            if (val && val !== 'none') {
+                if (!soundCache[val]) soundCache[val] = new Audio(`/static/sounds/${val}.mp3`);
+                soundCache[val].currentTime = 0;
+                soundCache[val].play().catch(() => {});
+            }
+        });
+    }
+
+    // Kick button: opens the existing kick-confirm popover anchored to
+    // the same pill. Reuses showKickConfirm so the kick flow stays in one
+    // place. Pill popover closes; the kick-confirm pop takes over.
+    const kickBtn = popover.querySelector('.pill-popover-kick-btn');
+    if (kickBtn) {
+        kickBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const ch = kickBtn.dataset.channel;
+            const label = opts.label || opts.name;
+            closePopover();
+            if (typeof showKickConfirm === 'function' && pillEl) {
+                showKickConfirm(pillEl, opts.name, label, ch);
+            }
+        });
+    }
+
+    // Permissions button: opens the per-agent permissions panel anchored
+    // to the same pill (settings-page.js owns the panel implementation).
+    const permsBtn = popover.querySelector('.pill-popover-permissions-btn');
+    if (permsBtn) {
+        permsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (typeof window.openAgentPermissionsPanel === 'function') {
+                window.openAgentPermissionsPanel(opts.name, pillEl);
+            }
+            closePopover();
         });
     }
 
@@ -1757,31 +1849,30 @@ function applySettings(data) {
     //     document.getElementById('room-title').textContent = data.title;
     //     document.title = data.title;
     // }
+    // Mirror the full server snapshot to window.appSettings so the new
+    // settings page can read it on demand. The legacy strip's per-element
+    // value-pushing is gone (the strip is gone).
+    window.appSettings = window.appSettings || {};
+    Object.assign(window.appSettings, data);
+
     if (data.username) {
         username = data.username;
-        document.getElementById('sender-label').textContent = username;
-        document.getElementById('setting-username').value = username;
+        const lbl = document.getElementById('sender-label');
+        if (lbl) lbl.textContent = username;
     }
     if (data.font) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');
         document.body.classList.add('font-' + data.font);
-        document.getElementById('setting-font').value = data.font;
-    }
-    if (data.max_agent_hops !== undefined) {
-        document.getElementById('setting-hops').value = data.max_agent_hops;
-    }
-    if (data.history_limit !== undefined) {
-        document.getElementById('setting-history').value = String(data.history_limit);
     }
     if (data.contrast) {
         document.body.classList.toggle('high-contrast', data.contrast === 'high');
-        document.getElementById('setting-contrast').value = data.contrast;
-    }
-    if (data.rules_refresh_interval !== undefined) {
-        document.getElementById('setting-rules-refresh').value = String(data.rules_refresh_interval);
     }
     if (Array.isArray(data.custom_roles)) {
         window.customRoles = data.custom_roles;
+    }
+    // Refresh the open settings page (if any) so values stay live.
+    if (typeof window.refreshSettingsPage === 'function') {
+        window.refreshSettingsPage();
     }
     if (data.channels && Array.isArray(data.channels)) {
         channelList = data.channels;
@@ -1835,12 +1926,16 @@ window.isChannelOpen = isChannelOpen;
 window.isAgentInChannel = isAgentInChannel;
 
 function toggleSettings() {
-    const bar = document.getElementById('settings-bar');
-    bar.classList.toggle('hidden');
-    document.getElementById('settings-toggle').classList.toggle('active', !bar.classList.contains('hidden'));
-    if (!bar.classList.contains('hidden')) {
-        document.getElementById('setting-username').focus();
+    // The legacy #settings-bar is gone; the new full-page settings panel
+    // is rendered on demand by settings-page.js (window.openSettingsPage).
+    const host = document.getElementById('settings-page');
+    const isOpen = host && !host.classList.contains('hidden');
+    if (isOpen) {
+        if (typeof window.closeSettingsPage === 'function') window.closeSettingsPage();
+    } else {
+        if (typeof window.openSettingsPage === 'function') window.openSettingsPage();
     }
+    document.getElementById('settings-toggle').classList.toggle('active', !isOpen);
 }
 
 function _clearClearChatConfirm() {
@@ -1874,7 +1969,9 @@ function clearChat() {
             ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
         }
         _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
+        // Old settings-bar removed; settings-page is a full-screen panel.
+        const _sp = document.getElementById('settings-bar');
+        if (_sp) _sp.classList.add('hidden');
         return;
     }
 
@@ -1900,7 +1997,9 @@ function clearChat() {
             ws.send(JSON.stringify({ type: 'message', text: '/clear', sender: username, channel: activeChannel }));
         }
         _clearClearChatConfirm();
-        document.getElementById('settings-bar').classList.add('hidden');
+        // Old settings-bar removed; settings-page is a full-screen panel.
+        const _sp = document.getElementById('settings-bar');
+        if (_sp) _sp.classList.add('hidden');
     };
     confirmWrap.querySelector('.ch-confirm-no').onclick = (e) => {
         e.stopPropagation();
@@ -1910,63 +2009,11 @@ function clearChat() {
     setTimeout(() => document.addEventListener('click', _clearChatOutsideClick, true), 0);
 }
 
-function saveSettings() {
-    const newUsername = document.getElementById('setting-username').value.trim();
-    const newFont = document.getElementById('setting-font').value;
-    const newHops = document.getElementById('setting-hops').value;
-    const histVal = document.getElementById('setting-history').value;
-    const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal) || 50);
-    const newContrast = document.getElementById('setting-contrast').value;
-    const newRulesRefresh = document.getElementById('setting-rules-refresh').value;
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'update_settings',
-            data: {
-                username: newUsername || 'user',
-                font: newFont,
-                max_agent_hops: parseInt(newHops) || 4,
-                history_limit: newHistory,
-                contrast: newContrast,
-                rules_refresh_interval: parseInt(newRulesRefresh) || 0,
-            }
-        }));
-    }
-}
-
-function setupSettingsKeys() {
-    // Auto-save on blur/Enter for text/number fields
-    for (const id of ['setting-username', 'setting-hops']) {
-        const el = document.getElementById(id);
-        el.addEventListener('blur', () => saveSettings());
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                el.blur();
-            }
-            if (e.key === 'Escape') {
-                toggleSettings();
-            }
-        });
-    }
-
-    // Auto-save on change for selects, escape to close
-    for (const id of ['setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
-        const el = document.getElementById(id);
-        el.addEventListener('change', () => {
-            // Apply contrast immediately (don't wait for server round-trip)
-            if (id === 'setting-contrast') {
-                document.body.classList.toggle('high-contrast', el.value === 'high');
-            }
-            saveSettings();
-        });
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                toggleSettings();
-            }
-        });
-    }
-}
+// Note: the legacy strip's saveSettings + setupSettingsKeys are gone.
+// settings-page.js owns all field wiring and saves via WS update_settings
+// directly. applySettings still mirrors the server snapshot to
+// window.appSettings so the page can read it on demand.
+function setupSettingsKeys() { /* no-op; kept so older boot paths don't crash */ }
 
 // --- Toast notifications ---
 
@@ -2015,10 +2062,15 @@ async function importHistory(input) {
     const file = input.files[0];
     if (!file) return;
     input.value = ''; // Reset so same file can be picked again
-    const btn = document.getElementById('import-history-btn');
-    const origText = btn.textContent;
-    btn.textContent = 'Importing...';
-    btn.disabled = true;
+    // Button id moved when the strip became the new settings page; tolerate
+    // either the legacy id or the new np-import id, or no button at all.
+    const btn = document.getElementById('import-history-btn')
+        || document.getElementById('np-import');
+    const origText = btn ? btn.textContent : '';
+    if (btn) {
+        btn.textContent = 'Importing...';
+        btn.disabled = true;
+    }
     try {
         const formData = new FormData();
         formData.append('file', file);
@@ -2049,8 +2101,10 @@ async function importHistory(input) {
     } catch (e) {
         showToast('Import failed: ' + e.message, 'error');
     } finally {
-        btn.textContent = origText;
-        btn.disabled = false;
+        if (btn) {
+            btn.textContent = origText;
+            btn.disabled = false;
+        }
     }
 }
 
