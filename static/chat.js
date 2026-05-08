@@ -1388,13 +1388,18 @@ function showPillPopover(pillEl, opts) {
             </div>`;
         })() : ''}
         ${opts.mode !== 'pending' ? (() => {
-            // Kick section: only render when the agent is currently a member
-            // of the active channel (otherwise there's nothing to kick from).
-            // Active-channel + membership lookups via window.* helpers so this
-            // works whether or not the agent's pill row is in #general.
+            // Kick section: render only when the agent is on the channel's
+            // EXPLICIT member list. isAgentInChannel returns true on "open"
+            // channels (no member list — the default state) which would
+            // make the button a silent no-op: remove_channel_members
+            // filters from an empty list, set_channel_members([])
+            // re-opens the channel, broadcast, agent's pill returns
+            // unchanged. Guard on getChannelMembers so the section only
+            // shows when there's an actual entry to remove.
             const ch = window.activeChannel || 'general';
-            if (typeof window.isAgentInChannel !== 'function') return '';
-            if (!window.isAgentInChannel(opts.name, ch)) return '';
+            if (typeof window.getChannelMembers !== 'function') return '';
+            const members = window.getChannelMembers(ch);
+            if (!members || members.indexOf(opts.name) === -1) return '';
             return `<div class="pill-popover-section">
                 <button class="pill-popover-kick-btn" data-agent="${escapeHtml(opts.name)}" data-channel="${escapeHtml(ch)}">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
