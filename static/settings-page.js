@@ -239,11 +239,26 @@ function _groupToolsByTier(toolTiers) {
     return groups;
 }
 
+// Engine-shipped defaults are returned by /api/permissions in
+// `default_tier_policy`. Fall back to a hardcoded mirror only if the
+// endpoint hasn't been called yet (or the field is absent — older
+// servers). Use _setEngineDefaults to keep this in sync after each fetch.
+let _engineDefaults = { 0: 'allow', 1: 'allow', 2: 'deny', 3: 'ask' };
+function _setEngineDefaults(map) {
+    if (!map || typeof map !== 'object') return;
+    const out = {};
+    for (const k of [0, 1, 2, 3]) {
+        const v = map[k] ?? map[String(k)];
+        if (_PERMS_DECISIONS.includes(v)) out[k] = v;
+    }
+    if (Object.keys(out).length) _engineDefaults = { ..._engineDefaults, ...out };
+}
+
 function _resolveDefault(tier, perms) {
     const defaults = (perms || {})._defaults || {};
     const v = defaults[`tier_${tier}`];
     if (_PERMS_DECISIONS.includes(v)) return v;
-    return ['allow', 'allow', 'deny', 'ask'][tier];
+    return _engineDefaults[tier] || 'deny';
 }
 
 function _renderDecisionGroup(scope, key, current) {
@@ -259,17 +274,21 @@ function _renderDecisionGroup(scope, key, current) {
 function _renderPermsDefaultsBlock(perms, toolTiers) {
     const groups = _groupToolsByTier(toolTiers);
     let html = '';
+    // Always render every tier 0-3 so the "Bucket default" pill is always
+    // editable, even for tiers that don't have any tools registered yet
+    // (e.g. tier-3 today). The backend accepts tier_3 — there's no reason
+    // the UI shouldn't surface it.
     for (const tier of [0, 1, 2, 3]) {
         const tools = groups[tier];
-        if (!tools.length) continue;
         const tierKey = `tier_${tier}`;
         const tierVal = ((perms._defaults || {})[tierKey]) || _resolveDefault(tier, perms);
+        const empty = !tools.length;
         html += `
-            <div class="np-perms-tier">
+            <div class="np-perms-tier${empty ? ' empty' : ''}">
                 <div class="np-perms-tier-header">
                     <span class="np-perms-tier-label">${_TIER_LABELS[tier]}</span>
                     <span class="np-perms-tier-row">
-                        <span class="np-perms-tier-hint">Bucket default</span>
+                        <span class="np-perms-tier-hint">${empty ? 'No tools registered yet' : 'Bucket default'}</span>
                         ${_renderDecisionGroup('tier', tierKey, tierVal)}
                     </span>
                 </div>
@@ -293,6 +312,7 @@ async function _wirePermissions() {
     const host = document.getElementById('np-perms-defaults');
     if (!host) return;
     const data = await _fetchPerms();
+    if (data) _setEngineDefaults(data.default_tier_policy);
     if (!data) {
         host.innerHTML = '<p class="np-placeholder">Could not load permissions.</p>';
         return;
@@ -354,6 +374,7 @@ async function _populateAgentPanel(panel, agent) {
         body.innerHTML = '<p class="np-placeholder">Could not load permissions.</p>';
         return;
     }
+    _setEngineDefaults(data.default_tier_policy);
     const groups = _groupToolsByTier(data.tool_tiers);
     const overrides = (data.permissions[agent] || {});
     let html = '';
