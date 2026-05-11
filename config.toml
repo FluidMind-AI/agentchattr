@@ -157,6 +157,38 @@ mcp_transport = "http"
 mcp_merge_project = true
 extra_args = ["--permission-mode", "acceptEdits"]
 
+# --- Absolute Japan website team ---
+# Project-specific frontend pair for the Absolute Japan brand site
+# (alejo-vargas/absolute-japan, live at www.absoluteracing.jp). Home channel
+# is #absolute-website. Both agents work in ~/absolute-japan with design
+# assets at ~/Agents/Absolute Japan/ added as --add-dir.
+
+# Shoji — frontend specialist for the Absolute Japan site. Builds the Exports
+# landing page; aesthetic baseline is the impeccable.style Claude Code skill.
+[agents.shoji]
+command = "claude"
+cwd = "../absolute-japan"
+color = "#D4A574"
+label = "Shoji"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
+# Kaizen — reviewer for Shoji's work. Reviews against spec + impeccable bar
+# before merge to alejo-vargas/absolute-japan main. Does not commit.
+[agents.kaizen]
+command = "claude"
+cwd = "../absolute-japan"
+color = "#8B5A3C"
+label = "Kaizen"
+mcp_inject = "flag"
+mcp_flag = "--mcp-config"
+mcp_transport = "http"
+mcp_merge_project = true
+extra_args = ["--permission-mode", "acceptEdits"]
+
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"
