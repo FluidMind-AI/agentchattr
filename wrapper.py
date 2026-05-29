@@ -309,25 +309,27 @@ def _apply_mcp_inject(
         expanded = template.format(server=SERVER_NAME, url=proxy_url or "")
         launch_args = expanded.split()
 
-        # Auto-approve all agentchattr tool calls. Codex CLI defaults to a
-        # per-tool approval prompt for MCP tools, which causes the inner agent
-        # to pause on every chat_send / chat_read and ask the user "Post as
-        # outsider in #..." — confusing UX and breaks autonomous operation.
-        # These -c overrides set every agentchattr tool to "auto" approval,
-        # shadowing any "approve" entries the user may have in
-        # ~/.codex/config.toml. Scope is limited to this MCP server, so
-        # codex's global sandbox + shell-command approval policies are
-        # untouched. (Per-tool entries override default_tools_approval_mode,
-        # so we set both belt-and-suspenders for users who pre-configured
-        # specific tools.)
+        # Auto-approve all agentchattr tool calls. Codex CLI otherwise pauses
+        # on every MCP tool call ("Allow the agentchattr MCP server to run
+        # tool chat_channels?"), which breaks unattended operation.
+        #
+        # The approval-mode enum is {auto, prompt, approve} (verified against
+        # codex-cli's own config validator). IMPORTANT: "auto" is NOT
+        # unconditional — it's codex's heuristic, which STILL prompts for MCP
+        # tools (observed live: the dialog appeared despite ...approval_mode=
+        # "auto"). "approve" is the unconditional always-allow value. We set
+        # the per-server default AND each tool explicitly (per-tool overrides
+        # the default, so this also wins over any "prompt" a user pre-set in
+        # ~/.codex/config.toml). Scope is limited to this MCP server — codex's
+        # global sandbox + shell-command approval_policy are untouched.
         for tool in _AGENTCHATTR_MCP_TOOLS:
             launch_args.extend([
                 "-c",
-                f'mcp_servers.{SERVER_NAME}.tools.{tool}.approval_mode="auto"',
+                f'mcp_servers.{SERVER_NAME}.tools.{tool}.approval_mode="approve"',
             ])
         launch_args.extend([
             "-c",
-            f'mcp_servers.{SERVER_NAME}.default_tools_approval_mode="auto"',
+            f'mcp_servers.{SERVER_NAME}.default_tools_approval_mode="approve"',
         ])
 
     return launch_args, inject_env, settings_path
