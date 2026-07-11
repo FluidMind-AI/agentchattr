@@ -273,10 +273,10 @@ class WrapperLaunchTests(unittest.TestCase):
         self.assertIn('mcp_servers.agentchattr.url="http://127.0.0.1:7777/mcp"', args[1])
         # Per-tool auto-approve overrides follow the URL override as -c pairs
         self.assertIn(
-            'mcp_servers.agentchattr.tools.chat_send.approval_mode="auto"', args
+            'mcp_servers.agentchattr.tools.chat_send.approval_mode="approve"', args
         )
         self.assertIn(
-            'mcp_servers.agentchattr.default_tools_approval_mode="auto"', args
+            'mcp_servers.agentchattr.default_tools_approval_mode="approve"', args
         )
         # User extra args come last
         self.assertEqual(args[-1], "--no-alt-screen")
