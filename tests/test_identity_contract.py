@@ -217,8 +217,8 @@ class WrapperLaunchTests(unittest.TestCase):
             )
             # Project servers preserved (minus unauthenticated agentchattr)
             self.assertIn("unity-mcp", payload["mcpServers"])
-            # Extra args preserved
-            self.assertEqual(args[2], "--debug")
+            # Base extra args (claude auto-mode) come first, then user extras
+            self.assertEqual(args[2:], ["--permission-mode", "acceptEdits", "--debug"])
             self.assertEqual(env["PATH"], os.environ.get("PATH", ""))
 
     def test_build_provider_launch_for_gemini_uses_direct_server_auth(self):
@@ -271,7 +271,15 @@ class WrapperLaunchTests(unittest.TestCase):
 
         self.assertEqual(args[0], "-c")
         self.assertIn('mcp_servers.agentchattr.url="http://127.0.0.1:7777/mcp"', args[1])
-        self.assertEqual(args[2], "--no-alt-screen")
+        # Per-tool auto-approve overrides follow the URL override as -c pairs
+        self.assertIn(
+            'mcp_servers.agentchattr.tools.chat_send.approval_mode="auto"', args
+        )
+        self.assertIn(
+            'mcp_servers.agentchattr.default_tools_approval_mode="auto"', args
+        )
+        # User extra args come last
+        self.assertEqual(args[-1], "--no-alt-screen")
         self.assertIn("PATH", env)
 
 
