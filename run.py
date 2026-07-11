@@ -62,9 +62,10 @@ def main():
     configure(config, session_token=session_token)
 
     # Share stores with the MCP bridge
-    from app import store, rules, summaries, jobs, room_settings, registry, router as app_router, agents as app_agents, session_engine, session_store
+    from app import store, rules, summaries, jobs, room_settings, registry, router as app_router, agents as app_agents, session_engine, session_store, hub_outbox
     import mcp_bridge
     mcp_bridge.store = store
+    mcp_bridge.hub_outbox = hub_outbox
     mcp_bridge.rules = rules
     mcp_bridge.summaries = summaries
     mcp_bridge.jobs = jobs

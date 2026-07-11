@@ -499,6 +499,9 @@ function connectWebSocket() {
             }
         } else if (event.type === 'typing') {
             updateTyping(event.agent, event.active);
+        } else if (event.type === 'route') {
+            // Hub routing outbox lifecycle (pending/delivered/cancelled cards)
+            if (typeof handleRouteEvent === 'function') handleRouteEvent(event.event, event.data);
         } else if (event.type === 'settings') {
             applySettings(event.data);
         } else if (event.type === 'delete') {
@@ -801,6 +804,12 @@ function appendMessage(msg) {
 
         const statusLabel = todoStatusLabel(todoStatus);
         el.dataset.rawText = msg.text;
+        // Origin provenance (hub relays): powers the "from #channel" badge
+        // and reply auto-routing (startReply reads the dataset).
+        if (msg.metadata?.origin_channel) {
+            el.dataset.originChannel = msg.metadata.origin_channel;
+        }
+        const originChipHtml = (typeof buildOriginChipHtml === 'function') ? buildOriginChipHtml(msg) : '';
         const senderRole = _agentRoles[msg.sender] || '';
         const roleClass = senderRole ? 'bubble-role has-role' : 'bubble-role';
         const rolePillHtml = !isSelf ? `<button class="${roleClass}" onclick="showBubbleRolePicker(this, '${escapeHtml(msg.sender)}')" title="${senderRole ? escapeHtml(senderRole) : 'Set role'}">${senderRole || 'choose a role'}</button>` : '';
@@ -817,7 +826,7 @@ function appendMessage(msg) {
                 ).join('') + '</div>';
             }
         }
-        el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(msg.sender)}</span>${rolePillHtml}<span class="msg-time">${msg.time || ''}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)">reply</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();">${statusLabel}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">del</button></div>`;
+        el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(msg.sender)}</span>${rolePillHtml}${originChipHtml}<span class="msg-time">${msg.time || ''}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)">reply</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();">${statusLabel}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">del</button></div>`;
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
 
@@ -1807,6 +1816,9 @@ function applySettings(data) {
             switchChannel(name);
         }
     }
+    // Noto hub identity — drives sidebar styling, routing cards, reply chips.
+    if (data.hub_channel) window.hubChannel = data.hub_channel;
+    if (data.hub_agent) window.hubAgent = data.hub_agent;
     // Channel-scoped agent membership.
     if (data.channel_members && typeof data.channel_members === 'object') {
         window.channelMembers = data.channel_members;
@@ -2610,7 +2622,13 @@ function startReply(msgId, event) {
     if (!el) return;
     const sender = el.querySelector('.msg-sender')?.textContent?.trim() || '?';
     const text = el.dataset.rawText || el.querySelector('.msg-text')?.textContent || '';
-    replyingTo = { id: msgId, sender, text };
+    // Replying (in the hub) to an origin-stamped relay: the server routes the
+    // reply to the origin channel — surface that on the reply banner.
+    const routeTarget = (el.dataset.originChannel
+        && activeChannel === window.hubChannel
+        && el.dataset.originChannel !== window.hubChannel)
+        ? el.dataset.originChannel : null;
+    replyingTo = { id: msgId, sender, text, routeTarget };
     renderReplyPreview();
 
     // Auto-activate mention chip for the replied-to sender, deactivate others
@@ -2645,7 +2663,10 @@ function renderReplyPreview() {
     }
     const truncated = replyingTo.text.length > 100 ? replyingTo.text.slice(0, 100) + '...' : replyingTo.text;
     const color = getColor(replyingTo.sender);
-    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${color}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
+    const routeChip = replyingTo.routeTarget
+        ? ` <span class="reply-route-chip" title="This reply will be sent to #${escapeHtml(replyingTo.routeTarget)}">→ #${escapeHtml(replyingTo.routeTarget)}</span>`
+        : '';
+    container.innerHTML = `<span class="reply-preview-label">replying to</span> <span style="color: ${color}; font-weight: 600">${escapeHtml(replyingTo.sender)}</span>: ${escapeHtml(truncated)}${routeChip} <button class="dismiss-btn reply-cancel" onclick="cancelReply()">&times;</button>`;
 }
 
 function cancelReply() {

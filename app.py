@@ -40,6 +40,7 @@ agents: AgentTrigger | None = None
 registry: RuntimeRegistry | None = None
 session_store: SessionStore | None = None
 session_engine: SessionEngine | None = None
+hub_outbox = None  # HubOutbox — set by configure()
 config: dict = {}
 ws_clients: set[WebSocket] = set()
 
@@ -60,6 +61,16 @@ room_settings: dict = {
     # send, and be @-mentioned. Non-empty list = restricted: only listed
     # agents are allowed in/visible to this channel.
     "channel_members": {},
+    # --- Noto hub ---
+    # hub_channel: the user's front door. The hub agent lives here, routes
+    # work out to other channels, and reports back with origin-stamped
+    # messages. Rendered with distinct hub styling in the sidebar.
+    "hub_channel": "general",
+    # hub_agent: canonical name of the coordinator whose cross-channel sends
+    # go through the grace-period routing outbox (see hub_router.py).
+    "hub_agent": "noto",
+    # Seconds a routed message stays cancellable in the hub before delivery.
+    "route_grace_seconds": 10,
 }
 
 # Channel validation
@@ -376,6 +387,14 @@ def configure(cfg: dict, session_token: str = ""):
     _load_settings()
     _load_hats()
 
+    # Hub routing outbox: the hub agent's cross-channel sends wait here for a
+    # cancellable grace window before real delivery (see hub_router.py).
+    global hub_outbox
+    from hub_router import HubOutbox
+    hub_outbox = HubOutbox(store, grace_seconds=float(
+        room_settings.get("route_grace_seconds", 10)))
+    hub_outbox.on_event(_on_route_event)
+
     # Apply saved loop guard setting
     if "max_agent_hops" in room_settings:
         router.max_hops = room_settings["max_agent_hops"]
@@ -601,6 +620,82 @@ def _on_store_message(msg: dict):
     except RuntimeError:
         pass  # No running loop — we're in a different thread (MCP)
     asyncio.run_coroutine_threadsafe(_handle_new_message(msg), _event_loop)
+
+
+def _on_route_event(event: str, route: dict):
+    """Called from any thread when a hub route changes state (hub_router.py).
+
+    Broadcasts the route card update to the UI; on delivery, also drops a
+    permanent route receipt into the hub so the hub timeline keeps a record
+    of what was routed where (the live card itself is ephemeral).
+    """
+    if event == "delivered":
+        try:
+            preview = route.get("text", "")
+            store.add(
+                "system", preview[:300],
+                msg_type="route_receipt",
+                channel=room_settings.get("hub_channel", "general"),
+                metadata={
+                    "actor": route.get("sender", ""),
+                    "target_channel": route.get("channel", ""),
+                    "msg_id": route.get("msg_id"),
+                },
+            )
+        except Exception:
+            pass
+    if _event_loop is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        if loop is _event_loop:
+            asyncio.ensure_future(broadcast_route(event, route))
+            return
+    except RuntimeError:
+        pass
+    asyncio.run_coroutine_threadsafe(broadcast_route(event, route), _event_loop)
+
+
+async def broadcast_route(event: str, route: dict):
+    data = json.dumps({"type": "route", "event": event, "data": route})
+    dead = set()
+    for client in list(ws_clients):
+        try:
+            await client.send_text(data)
+        except Exception:
+            dead.add(client)
+    ws_clients.difference_update(dead)
+
+
+def _resolve_hub_reply(reply_to: int, channel: str) -> tuple[str, int | None] | None:
+    """Route a hub reply back to the origin channel of the message it answers.
+
+    When the user replies (in the hub) to a message stamped with
+    origin_channel metadata (the hub agent's cross-channel reports), the
+    reply belongs in that origin channel — threaded onto origin_msg_id when
+    it still exists. Returns (origin_channel, origin_msg_id_or_None), or
+    None for a normal same-channel reply.
+    """
+    hub = room_settings.get("hub_channel", "general")
+    if channel != hub:
+        return None
+    parent = store.get_by_id(reply_to)
+    if not parent or parent.get("channel", "general") != hub:
+        return None
+    meta = parent.get("metadata") or {}
+    origin_channel = meta.get("origin_channel")
+    if not origin_channel or origin_channel == hub:
+        return None
+    if origin_channel not in room_settings.get("channels", []):
+        return None
+    origin_msg_id = meta.get("origin_msg_id")
+    try:
+        origin_msg_id = int(origin_msg_id)
+    except (TypeError, ValueError):
+        origin_msg_id = None
+    if origin_msg_id is not None and store.get_by_id(origin_msg_id) is None:
+        origin_msg_id = None
+    return origin_channel, origin_msg_id
 
 
 def _on_rule_change(action: str, rule: dict):
@@ -1153,6 +1248,12 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send schedules
     await websocket.send_text(json.dumps({"type": "schedules", "data": schedules.list_all()}))
 
+    # Send still-pending hub routes (so a page refresh keeps live routing cards)
+    if hub_outbox:
+        for r in hub_outbox.pending():
+            await websocket.send_text(json.dumps(
+                {"type": "route", "event": "pending", "data": r}))
+
     # Send pending instances (so late-connecting browsers still see the naming lightbox)
     if registry:
         for inst in registry.get_all().values():
@@ -1220,8 +1321,39 @@ async def websocket_endpoint(websocket: WebSocket):
                 if reply_to is not None:
                     reply_to = int(reply_to)
 
+                # Hub reply auto-routing: replying to an origin-stamped hub
+                # message sends the reply to the ORIGIN channel (threaded on
+                # the original message), and leaves a receipt in the hub.
+                routed = _resolve_hub_reply(reply_to, channel) if reply_to is not None else None
+                if routed:
+                    origin_channel, origin_msg_id = routed
+                    routed_msg = store.add(
+                        sender, text, attachments=attachments,
+                        reply_to=origin_msg_id, channel=origin_channel,
+                        metadata={"routed_from_hub": True},
+                    )
+                    store.add(
+                        "system", text[:300],
+                        msg_type="route_receipt", channel=channel,
+                        metadata={
+                            "actor": sender,
+                            "target_channel": origin_channel,
+                            "msg_id": routed_msg["id"],
+                            "auto_reply": True,
+                        },
+                    )
+                    continue
+
                 store.add(sender, text, attachments=attachments, reply_to=reply_to,
                           channel=channel)
+
+            elif event.get("type") == "route_cancel":
+                route_id = event.get("route_id")
+                if route_id is not None and hub_outbox:
+                    # Listener broadcasts the 'cancelled' card update; a False
+                    # return means it already delivered/cancelled — no-op.
+                    hub_outbox.cancel(int(route_id))
+                continue
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])

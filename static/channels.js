@@ -40,6 +40,30 @@ function _presentChannelMembers(channel) {
 // Render
 // ---------------------------------------------------------------------------
 
+// Channel list with the hub channel pinned first. The hub (settings.
+// hub_channel — the Noto front door) always leads the sidebar/tab order.
+function _orderedChannels() {
+    const hub = window.hubChannel;
+    const list = [...window.channelList];
+    const i = list.indexOf(hub);
+    if (i > 0) {
+        list.splice(i, 1);
+        list.unshift(hub);
+    }
+    return list;
+}
+
+// Hub row/tab label: the hub agent's name leads, the real channel name
+// stays visible as a suffix so "#general" remains discoverable.
+function _hubLabelHtml() {
+    const agent = window.hubAgent || 'noto';
+    const agentColor = (typeof getColor === 'function') ? getColor(agent) : '#00BCFF';
+    const display = agent.charAt(0).toUpperCase() + agent.slice(1);
+    return `<span class="hub-dot" style="background: ${agentColor}"></span>` +
+           `<span class="hub-name">${display}</span>` +
+           `<span class="hub-sub">#${window.hubChannel}</span>`;
+}
+
 function renderChannelTabs() {
     const container = document.getElementById('channel-tabs');
     if (!container) return;
@@ -48,14 +72,20 @@ function renderChannelTabs() {
     const existingCreate = container.querySelector('.channel-inline-create');
     container.innerHTML = '';
 
-    for (const name of window.channelList) {
+    for (const name of _orderedChannels()) {
         const tab = document.createElement('button');
-        tab.className = 'channel-tab' + (name === window.activeChannel ? ' active' : '');
+        const isHub = name === window.hubChannel;
+        tab.className = 'channel-tab' + (name === window.activeChannel ? ' active' : '') + (isHub ? ' hub' : '');
         tab.dataset.channel = name;
 
         const label = document.createElement('span');
         label.className = 'channel-tab-label';
-        label.textContent = '# ' + name;
+        if (isHub) {
+            label.innerHTML = _hubLabelHtml();
+            tab.title = `#${name} — ${window.hubAgent}'s hub: talk here, work gets routed`;
+        } else {
+            label.textContent = '# ' + name;
+        }
         tab.appendChild(label);
 
         const unread = window.channelUnread[name] || 0;
@@ -152,14 +182,20 @@ function renderChannelSidebar() {
     const existingCreate = list.querySelector('.channel-inline-create');
     list.innerHTML = '';
 
-    for (const name of window.channelList) {
+    for (const name of _orderedChannels()) {
         const row = document.createElement('button');
-        row.className = 'channel-sidebar-row' + (name === window.activeChannel ? ' active' : '');
+        const isHub = name === window.hubChannel;
+        row.className = 'channel-sidebar-row' + (name === window.activeChannel ? ' active' : '') + (isHub ? ' hub' : '');
         row.dataset.channel = name;
 
         const label = document.createElement('span');
         label.className = 'channel-sidebar-row-label';
-        label.textContent = '# ' + name;
+        if (isHub) {
+            label.innerHTML = _hubLabelHtml();
+            row.title = `#${name} — ${window.hubAgent}'s hub: talk here, work gets routed`;
+        } else {
+            label.textContent = '# ' + name;
+        }
         row.appendChild(label);
 
         const unread = window.channelUnread[name] || 0;

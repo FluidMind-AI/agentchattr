@@ -26,6 +26,7 @@ registry = None       # set by run.py — RuntimeRegistry instance
 config = None         # set by run.py — full config.toml dict
 router = None         # set by run.py — Router instance
 agents = None         # set by run.py — AgentManager instance
+hub_outbox = None     # set by run.py — HubOutbox instance (hub routing grace window)
 _presence: dict[str, float] = {}
 _activity: dict[str, bool] = {}   # True = screen changed on last poll
 _activity_ts: dict[str, float] = {}  # timestamp of last active=True heartbeat
@@ -198,6 +199,8 @@ def chat_send(
     reply_to: int = -1,
     channel: str = "",
     job_id: int = 0,
+    origin_channel: str = "",
+    origin_msg_id: int = -1,
     ctx: Context | None = None,
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
@@ -210,6 +213,16 @@ def chat_send(
         `chat_read(channel="bugfixing")` lands in #bugfixing, not #general).
       - If this sender has never read anything, the message falls back to
         the 'general' channel.
+    Hub reporting (coordinator agents): when relaying news FROM another
+    channel INTO the hub channel, stamp the source with origin_channel (and
+    origin_msg_id for the specific message you're reporting on). The UI shows
+    a 'from #channel' badge, and the user's replies to your report are
+    auto-routed back to that origin channel:
+      chat_send(sender="noto", channel="general", origin_channel="notolink-dev",
+                origin_msg_id=123, message="pixel finished the sidebar fix", choices=[])
+    Note for the hub agent: your sends to channels OTHER than the hub do not
+    deliver instantly — they wait in a short cancellable grace window shown
+    to the user in the hub. The tool result tells you when this happens.
     IMPORTANT: Always include the choices parameter. When asking a yes/no or
     multiple-choice question, provide the options so the user can respond with
     a single click:
@@ -350,6 +363,38 @@ def chat_send(
     if clean_choices:
         msg_type = "decision"
         metadata = {"choices": clean_choices, "resolved": False}
+
+    # Origin stamping (hub reporting): record which channel/message this
+    # message relays. Drives the 'from #channel' badge and hub reply
+    # auto-routing in the UI. Silently dropped if the origin doesn't exist —
+    # a bad stamp should not block the message itself.
+    if origin_channel:
+        known = room_settings.get("channels", []) if room_settings else []
+        if origin_channel in known and origin_channel != channel:
+            metadata = dict(metadata or {})
+            metadata["origin_channel"] = origin_channel
+            # Message ids start at 0 — use the same -1 sentinel as reply_to.
+            if origin_msg_id >= 0 and store.get_by_id(origin_msg_id) is not None:
+                metadata["origin_msg_id"] = origin_msg_id
+
+    # Hub routing grace window: the hub agent's sends to channels OTHER than
+    # the hub don't deliver immediately — they wait in the outbox, visible
+    # and cancellable in the hub UI. Server-enforced so a routing mistake
+    # can be stopped before any mention triggers fire in the target channel.
+    hub_agent = room_settings.get("hub_agent", "") if room_settings else ""
+    hub_channel = room_settings.get("hub_channel", "general") if room_settings else "general"
+    if (hub_outbox is not None and hub_agent and sender == hub_agent
+            and channel and channel != hub_channel):
+        route = hub_outbox.enqueue(
+            sender, message.strip(), channel,
+            reply_to=reply_id, attachments=attachments or None,
+            msg_type=msg_type, metadata=metadata)
+        with _presence_lock:
+            _presence[sender] = time.time()
+        grace = int(hub_outbox.grace_seconds)
+        return (f"Queued for #{channel} — delivers in ~{grace}s unless the user "
+                f"cancels it from the hub (route_id={route['route_id']}). "
+                "No further action needed; do not resend.")
 
     msg = store.add(sender, message.strip(), attachments=attachments,
                     reply_to=reply_id, channel=channel,
