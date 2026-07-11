@@ -96,14 +96,19 @@ def run_agent(
     inject_delay: float = 0.3,
     initial_prompt: str | None = None,
     initial_prompt_delay: float = 5.0,
+    dynamic_args_fn=None,
 ):
-    """Run agent inside a tmux session, inject via tmux send-keys."""
+    """Run agent inside a tmux session, inject via tmux send-keys.
+
+    dynamic_args_fn: optional zero-arg callable returning extra CLI args
+    recomputed at EVERY (re)start of the inner CLI — not just once at wrapper
+    boot. Used for claude session continuity (--session-id on first start,
+    --resume once the transcript exists; see wrapper._claude_session_args).
+    """
     _check_tmux()
 
     session_name = session_name or f"agentchattr-{agent}"
-    agent_cmd = " ".join(
-        [shlex.quote(command)] + [shlex.quote(a) for a in extra_args]
-    )
+    base_cmd = [shlex.quote(command)] + [shlex.quote(a) for a in extra_args]
 
     # Build env(1) prefix for the command INSIDE the tmux session.
     # subprocess.run(env=...) only affects the tmux client binary — the
@@ -117,8 +122,18 @@ def run_agent(
             f"{shlex.quote(k)}={shlex.quote(v)}"
             for k, v in inject_env.items()
         )
-    if env_parts:
-        agent_cmd = f"env {' '.join(env_parts)} {agent_cmd}"
+
+    def _build_agent_cmd() -> str:
+        parts = list(base_cmd)
+        if dynamic_args_fn:
+            try:
+                parts.extend(shlex.quote(a) for a in dynamic_args_fn())
+            except Exception:
+                pass
+        cmd = " ".join(parts)
+        if env_parts:
+            cmd = f"env {' '.join(env_parts)} {cmd}"
+        return cmd
 
     # Resolve cwd to absolute path (tmux -c needs it)
     from pathlib import Path
@@ -140,10 +155,13 @@ def run_agent(
                 capture_output=True,
             )
 
-            # Create tmux session running the agent CLI
+            # Create tmux session running the agent CLI. The command is
+            # rebuilt each iteration so dynamic args (session resume) reflect
+            # the CURRENT state — e.g. the transcript created by the previous
+            # iteration flips --session-id to --resume.
             result = subprocess.run(
                 ["tmux", "new-session", "-d", "-s", session_name,
-                 "-c", abs_cwd, agent_cmd],
+                 "-c", abs_cwd, _build_agent_cmd()],
                 env=env,
             )
             if result.returncode != 0:

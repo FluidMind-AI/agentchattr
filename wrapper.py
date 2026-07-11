@@ -20,6 +20,7 @@ How it works:
 
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -369,6 +370,28 @@ def _ensure_gemini_folder_trusted(project_dir: Path) -> None:
         print(f"  Warning: could not update Gemini trusted folders: {exc}")
 
 
+def _claude_session_args(session_uuid: str, project_dir: Path) -> list[str]:
+    """Session-continuity args for a claude-CLI agent.
+
+    Claude Code stores transcripts at ~/.claude/projects/<munged>/<uuid>.jsonl,
+    where <munged> is the absolute cwd with every non-alphanumeric character
+    replaced by '-'. If a transcript for session_uuid already exists there we
+    resume it (--resume keeps the SAME session id, so this works across any
+    number of restarts); otherwise we start a fresh session pinned to that
+    UUID (--session-id) so the NEXT restart finds it.
+
+    Must be re-evaluated at every inner-CLI (re)start — not once at wrapper
+    boot — because the first start creates the transcript that later restarts
+    must resume. wrapper_unix.run_agent calls this via dynamic_args_fn inside
+    its restart loop.
+    """
+    munged = re.sub(r"[^A-Za-z0-9]", "-", str(project_dir))
+    transcript = Path.home() / ".claude" / "projects" / munged / f"{session_uuid}.jsonl"
+    if transcript.exists():
+        return ["--resume", session_uuid]
+    return ["--session-id", session_uuid]
+
+
 def _build_provider_launch(
     agent: str,
     agent_cfg: dict,
@@ -640,6 +663,7 @@ def main():
     parser.add_argument("--initial-prompt", default=None, help="One-shot prompt sent to the inner agent ~5s after the tmux session boots (for SOP startup rituals: read CLAUDE.md, post 'online', etc.)")
     parser.add_argument("--initial-prompt-delay", type=float, default=5.0, help="Seconds to wait after tmux session creation before injecting --initial-prompt (default 5)")
     parser.add_argument("--home-channel", default="", help="Channel name used to filter injected rules. Channel-scoped rules in this channel + global rules are injected. Defaults to empty (global rules only).")
+    parser.add_argument("--session-uuid", default=None, help="Stable conversation UUID for claude-CLI agents. On every inner-CLI (re)start the wrapper resumes this conversation if its transcript exists (claude --resume), else starts a new one pinned to this UUID (claude --session-id). Gives agents full conversation continuity across wrapper/server/machine restarts. Mac/Linux only; ignored for non-claude CLIs and on Windows.")
     args, extra = parser.parse_known_args()
 
     agent = args.agent
@@ -954,6 +978,15 @@ def main():
         run_kwargs["enter_backend"] = agent_cfg.get("enter_backend", "console_input")
     if sys.platform != "win32":
         run_kwargs["session_name"] = unix_session_name
+        if args.session_uuid:
+            # Conversation continuity: re-evaluated by run_agent at every
+            # inner-CLI (re)start, so the first start's --session-id becomes
+            # --resume on all subsequent restarts. Claude-CLI semantics; the
+            # launcher only passes --session-uuid for claude-backed agents.
+            session_uuid = args.session_uuid
+            run_kwargs["dynamic_args_fn"] = (
+                lambda: _claude_session_args(session_uuid, project_dir)
+            )
 
     try:
         run_agent(**run_kwargs)
