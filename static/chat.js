@@ -17,6 +17,13 @@ let activeMentions = new Set();  // agent names with pre-@ toggled on (for the a
 let _channelMentions = {};  // channel -> array of toggled agent names (per-channel memory of activeMentions)
 let replyingTo = null;  // { id, sender, text } or null
 let unreadCount = 0;    // messages received while scrolled up
+// Reconnect hygiene: the server replays history on every WS (re)connect.
+// Without dedupe, each reconnect (sleep/wake, network blip) appended a full
+// duplicate of the timeline to the DOM — the main long-uptime slowdown.
+const _seenMsgIds = new Set();   // message ids already rendered (or pruned)
+let _maxSeenMsgId = -1;          // high-water mark → ?since= on reconnect
+const MAX_DOM_MESSAGES = 4000;   // global DOM cap (prune to MIN below)
+const MIN_DOM_MESSAGES = 3500;
 let lastMessageDate = null;  // track date for dividers (general channel)
 let lastMessageDates = {};  // { channel: dateString } for per-channel dividers
 let soundEnabled = false;  // suppress sounds during initial history load
@@ -370,7 +377,10 @@ function addCodeCopyButtons(container) {
 
 function connectWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}`);
+    // Incremental replay: after the first connect, only ask for messages we
+    // haven't seen. Keeps reconnects O(new messages) instead of O(history).
+    const since = _maxSeenMsgId >= 0 ? `&since=${_maxSeenMsgId}` : '';
+    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(SESSION_TOKEN)}${since}`);
 
     ws.onopen = () => {
         console.log('WebSocket connected');
@@ -378,6 +388,8 @@ function connectWebSocket() {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
+        // Re-subscribe any open X-ray stream (its server poller died with the old socket)
+        if (typeof _xrayOnReconnect === 'function') _xrayOnReconnect();
     };
 
     ws.onmessage = (e) => {
@@ -502,6 +514,8 @@ function connectWebSocket() {
         } else if (event.type === 'route') {
             // Hub routing outbox lifecycle (pending/delivered/cancelled cards)
             if (typeof handleRouteEvent === 'function') handleRouteEvent(event.event, event.data);
+        } else if (event.type === 'xray_frame') {
+            if (typeof handleXrayFrame === 'function') handleXrayFrame(event);
         } else if (event.type === 'settings') {
             applySettings(event.data);
         } else if (event.type === 'delete') {
@@ -584,7 +598,10 @@ function connectWebSocket() {
                         toRemove.push(el);
                     }
                 }
-                toRemove.forEach(el => el.remove());
+                toRemove.forEach(el => {
+                    _seenMsgIds.delete(parseInt(el.dataset.id, 10));
+                    el.remove();
+                });
                 // Clean up orphaned date dividers and reset tracking
                 delete lastMessageDates[clearChannel];
                 filterMessagesByChannel();
@@ -593,6 +610,8 @@ function connectWebSocket() {
                 document.getElementById('messages').innerHTML = '';
                 lastMessageDate = null;
                 lastMessageDates = {};
+                _seenMsgIds.clear();
+                _maxSeenMsgId = -1;
             }
             requestAnimationFrame(() => {
                 const _clearDbgAfter = _clearDbgList ? _clearDbgList.children.length : -1;
@@ -673,6 +692,26 @@ function maybeInsertDateDivider(container, msg) {
 
 function appendMessage(msg) {
     const container = document.getElementById('messages');
+
+    // Dedupe: history replays on reconnect must not re-render messages that
+    // are already in the DOM (or were deliberately pruned from it).
+    if (msg.id !== undefined && msg.id !== null) {
+        if (_seenMsgIds.has(msg.id)) return;
+        _seenMsgIds.add(msg.id);
+        if (msg.id > _maxSeenMsgId) _maxSeenMsgId = msg.id;
+    }
+
+    // Global DOM cap: a long-running tab otherwise accumulates every message
+    // ever (history_limit "all"). Prune the oldest rows past the cap — their
+    // ids stay in _seenMsgIds so replays don't resurrect them at the bottom.
+    if (container.children.length > MAX_DOM_MESSAGES) {
+        const excess = container.children.length - MIN_DOM_MESSAGES;
+        for (let i = 0; i < excess; i++) {
+            const first = container.firstElementChild;
+            if (!first) break;
+            first.remove();
+        }
+    }
 
     // Insert date divider if needed
     maybeInsertDateDivider(container, msg);
@@ -1345,6 +1384,12 @@ function showPillPopover(pillEl, opts) {
         ).join('');
 
     popover.innerHTML = `
+        <div class="pill-popover-section pill-popover-xray-section">
+            <button class="pill-popover-xray" title="Live view of this agent's terminal">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2.5 2L4 10M8 10.5h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                X-ray terminal
+            </button>
+        </div>
         <div class="pill-popover-section">
             <label class="pill-popover-label">${opts.mode === 'pending' ? 'Name this agent' : 'Rename'}</label>
             <div class="pill-popover-rename-row">
@@ -1393,6 +1438,15 @@ function showPillPopover(pillEl, opts) {
     const inputEl = popover.querySelector('.pill-popover-input');
     const confirmBtn = popover.querySelector('.pill-popover-confirm');
     const customInput = popover.querySelector('.pill-popover-custom-input');
+
+    const xrayBtn = popover.querySelector('.pill-popover-xray');
+    if (xrayBtn) {
+        xrayBtn.onclick = (e) => {
+            e.stopPropagation();
+            closePopover();
+            if (typeof openXray === 'function') openXray(opts.name);
+        };
+    }
 
     const closePopover = () => {
         popover.remove();
@@ -2928,6 +2982,7 @@ function handleDeleteBroadcast(ids) {
     for (const id of ids) {
         const el = document.querySelector(`.message[data-id="${id}"]`);
         if (el) el.remove();
+        _seenMsgIds.delete(id);
         // Clean from todos
         delete todos[id];
     }

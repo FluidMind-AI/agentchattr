@@ -5109,3 +5109,137 @@ footer {
     border: 1px solid hsla(197 100% 50% / 0.40);
     color: hsl(197 90% 70%);
 }
+
+/* ===========================================================================
+   X-ray — live agent terminal drawer
+   =========================================================================== */
+
+.pill-popover-xray {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 6px 10px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-subtle);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+.pill-popover-xray:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+#xray-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(46vw, 760px);
+    display: flex;
+    flex-direction: column;
+    background: hsl(222 22% 8%);
+    border-left: 1px solid var(--border-strong);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+    z-index: 900;
+}
+.xray-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-canvas);
+}
+.xray-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    box-shadow: 0 0 6px 1px rgba(255, 255, 255, 0.15);
+}
+.xray-title { font-weight: 600; font-size: 13.5px; }
+.xray-session {
+    font-size: 11px;
+    opacity: 0.55;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.xray-close {
+    margin-left: auto;
+    font-size: 20px;
+    line-height: 1;
+    padding: 2px 8px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    opacity: 0.6;
+    cursor: pointer;
+    border-radius: 6px;
+}
+.xray-close:hover { opacity: 1; background: var(--bg-subtle); }
+
+.xray-screen {
+    flex: 1;
+    margin: 0;
+    padding: 12px 14px;
+    overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #dcdfe4;
+    background: hsl(222 22% 8%);
+}
+.xray-error { color: hsl(0 80% 70%); }
+
+.xray-controls {
+    border-top: 1px solid var(--border);
+    background: var(--bg-canvas);
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+.xray-keys { display: flex; gap: 6px; }
+.xray-keys button {
+    min-width: 34px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-subtle);
+    color: var(--text);
+    cursor: pointer;
+}
+.xray-keys button:hover { background: var(--accent-soft); border-color: var(--accent); }
+.xray-input-row { display: flex; gap: 7px; }
+.xray-input-row input {
+    flex: 1;
+    padding: 7px 10px;
+    font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-input);
+    color: var(--text);
+}
+.xray-send {
+    padding: 7px 16px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 7px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--text);
+    cursor: pointer;
+}
+.xray-send:hover { background: var(--accent-hover); }
+
+@media (max-width: 900px) {
+    #xray-panel { width: 100vw; }
+}

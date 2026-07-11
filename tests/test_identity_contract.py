@@ -356,6 +356,13 @@ class ProxyHeaderForwardingTests(unittest.TestCase):
             def do_POST(self):
                 seen["authorization"] = self.headers.get("Authorization")
                 seen["agent_token"] = self.headers.get("X-Agent-Token")
+                # Drain the request body BEFORE responding/closing. Closing a
+                # socket with unread data makes the kernel send RST, and the
+                # proxy's forward intermittently died with 'connection reset
+                # by peer' (the suite's one flaky test).
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
                 body = b'event: message\r\ndata: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\r\n\r\n'
                 self.send_response(200)
                 # Match the lowercase header names emitted by the upstream FastMCP app.

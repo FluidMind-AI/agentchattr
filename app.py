@@ -622,6 +622,101 @@ def _on_store_message(msg: dict):
     asyncio.run_coroutine_threadsafe(_handle_new_message(msg), _event_loop)
 
 
+# --- X-ray: live agent terminal views ---------------------------------------
+#
+# Each agent runs its CLI inside a tmux session on this same machine
+# (agentchattr-<name>, or notolink-<name> for the hub coordinator). X-ray
+# streams `tmux capture-pane` frames to the browser over the existing WS and
+# forwards occasional keystrokes back via `tmux send-keys` — a lightweight
+# read-mostly window into the terminal, without a PTY bridge or extra deps.
+
+_XRAY_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-]{0,31}$')
+_XRAY_POLL_INTERVAL = 0.7
+_XRAY_LINES = 200
+# Keys the UI may forward. Allowlist — never pass client strings straight to
+# tmux as key names.
+_XRAY_KEYS = {"Enter", "Escape", "C-c", "Up", "Down", "Left", "Right", "Tab", "BSpace"}
+
+
+def _xray_session_for(agent: str) -> str | None:
+    """Resolve the live tmux session for an agent, trying known prefixes."""
+    import subprocess
+    for prefix in ("agentchattr", "notolink"):
+        name = f"{prefix}-{agent}"
+        try:
+            r = subprocess.run(["tmux", "has-session", "-t", name],
+                               capture_output=True, timeout=3)
+        except Exception:
+            return None
+        if r.returncode == 0:
+            return name
+    return None
+
+
+def _xray_capture(session: str) -> str | None:
+    """Grab the visible pane + recent scrollback, ANSI colors preserved (-e)."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-pt", session, "-e", "-S", f"-{_XRAY_LINES}"],
+            capture_output=True, timeout=3)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8", "replace")
+
+
+def _xray_send_input(agent: str, text, key):
+    """Forward typed text and/or an allowlisted special key to the agent's tmux."""
+    import subprocess
+    session = _xray_session_for(agent)
+    if not session:
+        return
+    try:
+        if text and isinstance(text, str):
+            subprocess.run(["tmux", "send-keys", "-t", session, "-l", text],
+                           capture_output=True, timeout=3)
+        if key in _XRAY_KEYS:
+            subprocess.run(["tmux", "send-keys", "-t", session, key],
+                           capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
+async def _xray_stream(websocket: WebSocket, agent: str):
+    """Poll the agent's pane and push frames when the content changes."""
+    loop = asyncio.get_running_loop()
+    last_frame = None
+    reported_missing = False
+    try:
+        while True:
+            session = await loop.run_in_executor(None, _xray_session_for, agent)
+            if not session:
+                if not reported_missing:
+                    reported_missing = True
+                    last_frame = None
+                    await websocket.send_text(json.dumps({
+                        "type": "xray_frame", "agent": agent,
+                        "data": None, "error": "no live tmux session for this agent",
+                    }))
+            else:
+                reported_missing = False
+                content = await loop.run_in_executor(None, _xray_capture, session)
+                if content is not None and content != last_frame:
+                    last_frame = content
+                    await websocket.send_text(json.dumps({
+                        "type": "xray_frame", "agent": agent,
+                        "data": content, "session": session,
+                    }))
+            await asyncio.sleep(_XRAY_POLL_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Socket died or send failed — the poller has no one to talk to.
+        return
+
+
 def _on_route_event(event: str, route: dict):
     """Called from any thread when a hub route changes state (hub_router.py).
 
@@ -1266,13 +1361,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     "color": inst.get("color", "#888"),
                 }))
 
-    # Send history (per channel based on history_limit)
+    # Send history (per channel based on history_limit). Reconnecting clients
+    # pass ?since=<max seen id> — replay only what they missed instead of the
+    # full history (which they'd have to dedupe and we'd have to re-serialize;
+    # at 12 agents chatting for weeks that was megabytes per sleep/wake blip).
+    since_raw = websocket.query_params.get("since")
+    since_id = None
+    if since_raw is not None:
+        try:
+            since_id = int(since_raw)
+        except ValueError:
+            since_id = None
+
     limit_val = room_settings.get("history_limit", "all")
     count = 10000 if limit_val == "all" else int(limit_val)
-    
+
     history = []
     for ch in room_settings["channels"]:
-        history.extend(store.get_recent(count, channel=ch))
+        if since_id is not None:
+            history.extend(store.get_since(since_id, channel=ch))
+        else:
+            history.extend(store.get_recent(count, channel=ch))
     
     # Sort history by timestamp to interleave messages from different channels correctly
     history.sort(key=lambda m: m.get("timestamp", 0))
@@ -1282,6 +1391,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Send status
     await broadcast_status()
+
+    # X-ray terminal streams owned by THIS connection (agent → asyncio.Task).
+    # Cancelled on xray_close and when the socket dies (finally below) so a
+    # closed tab never leaves a poller running.
+    xray_tasks: dict[str, asyncio.Task] = {}
 
     try:
         while True:
@@ -1652,11 +1766,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 set_channel_members(name, [str(a) for a in agents_list])
                 await broadcast_settings()
 
+            elif event.get("type") == "xray_open":
+                agent = str(event.get("agent", ""))
+                if _XRAY_NAME_RE.match(agent) and agent not in xray_tasks:
+                    xray_tasks[agent] = asyncio.create_task(
+                        _xray_stream(websocket, agent))
+
+            elif event.get("type") == "xray_close":
+                task = xray_tasks.pop(str(event.get("agent", "")), None)
+                if task:
+                    task.cancel()
+
+            elif event.get("type") == "xray_input":
+                agent = str(event.get("agent", ""))
+                if _XRAY_NAME_RE.match(agent):
+                    text = event.get("text")
+                    key = event.get("key")
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, _xray_send_input, agent, text, key)
+
     except WebSocketDisconnect:
         ws_clients.discard(websocket)
     except Exception:
         ws_clients.discard(websocket)
         log.exception("WebSocket error")
+    finally:
+        for task in xray_tasks.values():
+            task.cancel()
 
 
 # --- REST endpoints ---
